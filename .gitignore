@@ -1,0 +1,8 @@
+node_modules
+.pnpm-store
+.next
+dist
+coverage
+.env
+*.log
+services/renderer/output/*.png

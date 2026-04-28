@@ -1,0 +1,22 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RenderStatus {
+  pending
+  processing
+  done
+}
+
+model Render {
+  id        String       @id @default(uuid())
+  status    RenderStatus @default(pending)
+  items     Json
+  imageUrl  String?
+  createdAt DateTime     @default(now())
+}

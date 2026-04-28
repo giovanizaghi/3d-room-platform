@@ -1,0 +1,17 @@
+{
+  "name": "3d-room-platform",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.12.2",
+  "scripts": {
+    "dev:web": "pnpm --filter @apps/web dev",
+    "dev:api": "pnpm --filter @apps/api dev",
+    "dev:worker": "pnpm --filter @apps/worker dev",
+    "db:migrate": "pnpm --filter @repo/db db:migrate",
+    "db:studio": "pnpm --filter @repo/db db:studio"
+  },
+  "devDependencies": {
+    "@types/node": "^22.8.7",
+    "typescript": "^5.6.3"
+  }
+}
