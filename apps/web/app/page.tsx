@@ -1,22 +1,82 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RenderStatus, type RenderJob } from "@repo/types";
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+
+const LOADING_MESSAGES = [
+  "Submitting render job…",
+  "Rendering in Cycles engine…",
+  "Blender rendering in progress…",
+  "Compositing final image…",
+  "Almost there, finalizing output…",
+];
+
+function Spinner() {
+  return (
+    <svg
+      className="animate-spin-slow h-5 w-5"
+      viewBox="0 0 24 24"
+      fill="none"
+    >
+      <circle
+        className="opacity-25"
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="3"
+      />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+      />
+    </svg>
+  );
+}
+
+function StatusDot({ status }: { status: RenderStatus }) {
+  const color = {
+    [RenderStatus.pending]: "bg-warning",
+    [RenderStatus.processing]: "bg-accent animate-pulse",
+    [RenderStatus.done]: "bg-success",
+  }[status];
+
+  return <span className={`inline-block h-2.5 w-2.5 rounded-full ${color}`} />;
+}
 
 export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [job, setJob] = useState<RenderJob | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const statusLabel = useMemo(() => {
-    if (!job) return "No job started yet";
-    return `Status: ${job.status}`;
-  }, [job]);
+  const startTimer = useCallback(() => {
+    setElapsed(0);
+    timerRef.current = setInterval(() => setElapsed((s) => s + 1), 1000);
+  }, []);
+
+  const stopTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => stopTimer();
+  }, [stopTimer]);
+
+  const loadingMessage = useMemo(() => {
+    const idx = Math.min(Math.floor(elapsed / 10), LOADING_MESSAGES.length - 1);
+    return LOADING_MESSAGES[idx];
+  }, [elapsed]);
 
   async function pollStatus(renderId: string) {
-    const maxAttempts = 30;
+    const maxAttempts = 60;
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const response = await fetch(`${apiBase}/render/${renderId}`);
@@ -29,7 +89,6 @@ export default function HomePage() {
       setJob(data);
 
       if (data.status === RenderStatus.done) {
-        console.log("[render] image URL:", `${apiBase}/render/${renderId}/image`);
         return;
       }
 
@@ -42,6 +101,7 @@ export default function HomePage() {
   async function onGenerateRoom() {
     setLoading(true);
     setError(null);
+    startTimer();
 
     try {
       const response = await fetch(`${apiBase}/render`, {
@@ -50,54 +110,149 @@ export default function HomePage() {
         body: JSON.stringify({
           items: [
             { sku: "sofa-modern", quantity: 1, color: "sand" },
-            { sku: "lamp-tube", quantity: 2, color: "matte-black" }
-          ]
-        })
+            { sku: "lamp-tube", quantity: 2, color: "matte-black" },
+          ],
+        }),
       });
 
       if (!response.ok) {
         throw new Error(`Render request failed with ${response.status}`);
       }
 
-      const created = (await response.json()) as { id: string; status: RenderStatus };
+      const created = (await response.json()) as {
+        id: string;
+        status: RenderStatus;
+      };
       setJob({
         id: created.id,
         status: created.status,
         items: [],
         imageUrl: null,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
       });
 
       await pollStatus(created.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unexpected error");
     } finally {
+      stopTimer();
       setLoading(false);
     }
   }
 
   return (
-    <main className="container">
-      <section className="card">
-        <h1>3D Room Rendering</h1>
-        <p>
-          Submit a room composition and watch async rendering progress in near real
-          time.
-        </p>
-        <button onClick={onGenerateRoom} disabled={loading}>
-          {loading ? "Generating..." : "Generate Room"}
-        </button>
-        <p className="status">{statusLabel}</p>
-        {job?.status === RenderStatus.done && job?.imageUrl ? (
-          <div className="image-container">
-            <img
-              src={`${apiBase}/render/${job.id}/image`}
-              alt="Rendered room"
-              className="rendered-image"
-            />
+    <main className="min-h-screen flex items-center justify-center p-6">
+      {/* Ambient background glow */}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="absolute -top-40 -left-40 h-96 w-96 rounded-full bg-accent/10 blur-[120px]" />
+        <div className="absolute -bottom-40 -right-40 h-96 w-96 rounded-full bg-accent/5 blur-[120px]" />
+      </div>
+
+      <section className="relative w-full max-w-2xl animate-slide-up">
+        {/* Card */}
+        <div className="rounded-2xl border border-border bg-bg-card/80 backdrop-blur-sm p-8 shadow-2xl">
+          {/* Header */}
+          <div className="mb-8">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="h-8 w-8 rounded-lg bg-accent/20 flex items-center justify-center">
+                <svg className="h-4 w-4 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                </svg>
+              </div>
+              <h1 className="text-2xl font-semibold tracking-tight text-text-primary">
+                3D Room Rendering
+              </h1>
+            </div>
+            <p className="text-text-secondary text-sm leading-relaxed">
+              Submit a room composition and watch async rendering progress in
+              real time. Powered by Blender Cycles.
+            </p>
           </div>
-        ) : null}
-        {error ? <p className="error">{error}</p> : null}
+
+          {/* Action */}
+          <button
+            onClick={onGenerateRoom}
+            disabled={loading}
+            className={`
+              group relative w-full flex items-center justify-center gap-3
+              rounded-xl px-6 py-3.5 text-sm font-medium
+              transition-all duration-200 cursor-pointer
+              ${loading
+                ? "bg-accent/20 text-accent-light border border-accent/30 animate-glow-pulse"
+                : "bg-accent text-white hover:bg-accent-light hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-accent/25 hover:shadow-accent/40"
+              }
+              disabled:cursor-not-allowed
+            `}
+          >
+            {loading ? (
+              <>
+                <Spinner />
+                <span>{loadingMessage}</span>
+              </>
+            ) : (
+              <>
+                <svg className="h-4 w-4 transition-transform group-hover:rotate-12" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>Generate Room</span>
+              </>
+            )}
+          </button>
+
+          {/* Loading info */}
+          {loading && (
+            <div className="mt-5 flex items-center justify-between text-xs animate-fade-in">
+              <div className="flex items-center gap-2 text-text-muted">
+                <span className="font-mono">Elapsed: {elapsed}s</span>
+              </div>
+              <span className="text-text-muted font-mono">
+                Estimated: ~15–30s
+              </span>
+            </div>
+          )}
+
+          {/* Status */}
+          {job && (
+            <div className="mt-6 flex items-center gap-2.5 animate-fade-in">
+              <StatusDot status={job.status} />
+              <span className="text-sm text-text-secondary">
+                {job.status === RenderStatus.done
+                  ? "Render complete"
+                  : job.status === RenderStatus.processing
+                    ? "Processing"
+                    : "Pending"}
+              </span>
+              <span className="ml-auto font-mono text-xs text-text-muted">
+                {job.id.slice(0, 8)}
+              </span>
+            </div>
+          )}
+
+          {/* Rendered image */}
+          {job?.status === RenderStatus.done && job?.imageUrl && (
+            <div className="mt-6 animate-fade-in">
+              <div className="rounded-xl border border-border bg-black/30 p-4 shadow-inner">
+                <img
+                  src={`${apiBase}/render/${job.id}/image`}
+                  alt="Rendered room"
+                  className="w-full rounded-lg shadow-lg shadow-accent/10"
+                />
+              </div>
+              <div className="mt-3 flex items-center justify-between text-xs text-text-muted">
+                <span>Blender Cycles · 800×600 · 32 samples</span>
+                <span className="font-mono">Rendered in {elapsed}s</span>
+              </div>
+            </div>
+          )}
+
+          {/* Error */}
+          {error && (
+            <div className="mt-5 rounded-lg border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger animate-fade-in">
+              {error}
+            </div>
+          )}
+        </div>
       </section>
     </main>
   );
