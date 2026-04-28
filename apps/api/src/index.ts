@@ -224,8 +224,9 @@ app.get("/renders", async (_req, res) => {
     take: 50,
     include: { model: { select: { name: true } } },
   });
+  type RenderRow = (typeof renders)[number];
   return res.json(
-    renders.map((r) => ({
+    renders.map((r: RenderRow) => ({
       id: r.id,
       status: r.status,
       modelId: r.modelId,

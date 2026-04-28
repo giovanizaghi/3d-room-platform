@@ -10,8 +10,24 @@ Redis is used as the backing store for the job queue. BullMQ manages the full jo
 
 - Store pending render jobs durably in Redis
 - Deliver jobs to available workers in order
-- Handle automatic retries on failure
+- Handle automatic retries on failure with exponential backoff
 - Track and expose job state throughout its lifecycle
+
+---
+
+## Queue Configuration
+
+| Setting        | Value                          |
+| -------------- | ------------------------------ |
+| Queue name     | `render-jobs`                  |
+| Job name       | `render-room`                  |
+| Payload        | `{ renderId: string }`         |
+| Attempts       | 3                              |
+| Backoff type   | Exponential                    |
+| Backoff delay  | 2000ms (2s → 4s → 8s)         |
+| Concurrency    | 2 per worker instance          |
+
+The queue is defined in the shared `@repo/queue` package, which exports the queue name, connection, payload type, and a factory function (`createRenderQueue()`) used by the API to enqueue jobs.
 
 ---
 
@@ -23,9 +39,23 @@ flowchart LR
     Redis[(Redis / BullMQ)]
     Worker[Worker Service]
 
-    API -->|Enqueue job| Redis
+    API -->|"add('render-room', { renderId })"| Redis
     Redis -->|Dequeue job| Worker
 ```
+
+---
+
+## Job Payload
+
+The payload is intentionally minimal — only the `renderId` is passed through the queue:
+
+```typescript
+type RenderJobPayload = {
+  renderId: string;
+};
+```
+
+All job metadata (model association, items, status) lives in PostgreSQL. The worker uses the `renderId` to look up everything it needs from the database. This keeps the queue payload small and avoids stale data issues if the database record is updated between enqueue and dequeue.
 
 ---
 
@@ -38,7 +68,7 @@ BullMQ manages jobs through the following states:
 | `waiting`   | Job has been enqueued and is waiting for an available worker  |
 | `active`    | A worker has picked up the job and is currently processing it |
 | `completed` | Job finished successfully                                     |
-| `failed`    | All retry attempts were exhausted without success             |
+| `failed`    | All 3 retry attempts were exhausted without success           |
 
 Jobs move through these states atomically. BullMQ uses Redis atomic operations to ensure a job is only picked up by one worker at a time.
 
@@ -46,11 +76,18 @@ Jobs move through these states atomically. BullMQ uses Redis atomic operations t
 
 ## Retry Behavior
 
-BullMQ retry configuration per job:
+Retry configuration is set per job at enqueue time in the API:
 
-- **Attempts**: Maximum number of times a job will be tried before being marked `failed`. Configurable per queue or per job.
-- **Backoff**: Supports fixed or exponential delay between retries. Exponential backoff increases the wait time after each failure (e.g., 1s → 2s → 4s), reducing load on a recovering system.
-- **Delay**: An initial delay can be set before the first attempt or between retries, useful for transient failure scenarios such as a renderer process restarting.
+```typescript
+await renderQueue.add("render-room", { renderId: render.id }, {
+  attempts: 3,
+  backoff: { type: "exponential", delay: 2000 },
+});
+```
+
+- **Attempts**: 3 total tries (1 initial + 2 retries)
+- **Backoff**: Exponential starting at 2000ms — delays are 2s, 4s, 8s between retries
+- **On final failure**: The worker's `failed` event handler resets the database status to `pending`, keeping the job visible in the frontend queue panel
 
 ---
 
@@ -64,3 +101,6 @@ Rendering is asynchronous and variable in duration. Without a queue, the system 
 
 **Why not a direct API → Worker call**
 A direct call (HTTP or RPC) would couple availability of the API to availability of the worker. If the worker is down, busy, or restarting, jobs would be lost. The queue decouples producers from consumers: the API can enqueue regardless of worker state, and the worker processes when ready.
+
+**Why the payload is minimal**
+Only `renderId` is passed through the queue. This avoids payload bloat, prevents stale data (the worker always reads the latest from the DB), and keeps the queue layer agnostic to business logic changes.
