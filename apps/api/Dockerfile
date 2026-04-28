@@ -1,12 +1,15 @@
 FROM node:20-slim
 
+# Install openssl (Prisma) and curl (healthcheck)
+RUN apt-get update && apt-get install -y openssl curl && rm -rf /var/lib/apt/lists/*
+
 # Enable corepack for pnpm
 RUN corepack enable
 
 WORKDIR /app
 
 # Copy workspace configs and lock file
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json ./
 
 # Copy packages needed by API
 COPY packages/types packages/types
@@ -20,7 +23,7 @@ COPY apps/api apps/api
 RUN pnpm install --frozen-lockfile
 
 # Generate Prisma client
-RUN pnpm --filter @repo/db prisma generate
+RUN pnpm --filter @repo/db exec prisma generate
 
 EXPOSE 4000
 

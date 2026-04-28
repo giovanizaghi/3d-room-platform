@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -53,8 +51,9 @@ services:
       - render_output:/app/services/renderer/output
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
+      start_period: 30s
       retries: 5
 
   worker:
