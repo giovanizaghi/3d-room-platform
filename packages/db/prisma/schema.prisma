@@ -13,10 +13,24 @@ enum RenderStatus {
   done
 }
 
+model Model3D {
+  id            String   @id @default(uuid())
+  name          String
+  description   String?
+  blendFilePath String
+  thumbnailPath String?
+  createdAt     DateTime @default(now())
+
+  renders Render[]
+}
+
 model Render {
   id        String       @id @default(uuid())
   status    RenderStatus @default(pending)
-  items     Json
+  items     Json?
   imageUrl  String?
   createdAt DateTime     @default(now())
+
+  modelId String
+  model   Model3D @relation(fields: [modelId], references: [id])
 }

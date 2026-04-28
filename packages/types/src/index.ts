@@ -10,14 +10,34 @@ export interface RenderItem {
   color?: string;
 }
 
+export interface Model3D {
+  id: string;
+  name: string;
+  description: string | null;
+  blendFilePath: string;
+  thumbnailPath: string | null;
+  createdAt: string;
+}
+
 export interface RenderJob {
   id: string;
   status: RenderStatus;
-  items: RenderItem[];
+  items: RenderItem[] | null;
   imageUrl: string | null;
+  modelId: string;
   createdAt: string;
 }
 
 export interface CreateRenderRequest {
-  items: RenderItem[];
+  modelId: string;
+  items?: RenderItem[];
+}
+
+export interface RenderQueueItem {
+  id: string;
+  status: RenderStatus;
+  modelId: string;
+  modelName: string;
+  imageUrl: string | null;
+  createdAt: string;
 }

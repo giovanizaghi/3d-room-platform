@@ -2,7 +2,7 @@
 
 ## Description
 
-This system implements a distributed asynchronous rendering pipeline for 3D room visualization. When a user triggers a render request from the frontend, the API layer persists the job metadata to PostgreSQL and enqueues it to a Redis-backed queue. A dedicated worker process consumes jobs independently from the API, delegating image generation to a Python renderer powered by Pillow. The generated PNG is written to a shared storage volume, which the API then serves back to the frontend. The frontend polls for job completion and displays the result once available.
+This system implements a distributed asynchronous rendering pipeline for 3D room visualization. When a user triggers a render request from the frontend, the API layer persists the job metadata to PostgreSQL and enqueues it to a Redis-backed queue. A dedicated worker process consumes jobs independently from the API, delegating image generation to Blender running in headless mode. Blender renders the scene using its native camera and writes a PNG to a shared storage volume, which the API then serves back to the frontend. The frontend polls for job completion and displays the result once available.
 
 ---
 
@@ -10,13 +10,13 @@ This system implements a distributed asynchronous rendering pipeline for 3D room
 
 ```mermaid
 flowchart TD
-    FE["Frontend\n(Next.js)"]
-    API["API\n(Node.js / Express)"]
+    FE["Frontend<br>(Next.js)"]
+    API["API<br>(Node.js / Express)"]
     DB["PostgreSQL"]
-    Queue["Redis\n(BullMQ Queue)"]
-    Worker["Worker\n(Node.js / BullMQ)"]
-    Renderer["Python Renderer\n(Pillow)"]
-    Storage["Storage\n(Docker Volume)"]
+    Queue["Redis<br>(BullMQ Queue)"]
+    Worker["Worker<br>(Node.js / BullMQ)"]
+    Renderer["Blender Renderer<br>(headless)"]
+    Storage["Storage<br>(Docker Volume)"]
 
     FE -->|"POST /render"| API
     API --> DB
@@ -40,7 +40,7 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant Q as Redis (BullMQ)
     participant W as Worker
-    participant R as Python Renderer
+    participant R as Blender Renderer
 
     User->>FE: Click "Generate Room"
     FE->>API: POST /render { items }
@@ -50,8 +50,8 @@ sequenceDiagram
 
     loop Job Processing
         Q->>W: Dequeue job
-        W->>R: python render.py --id --items
-        R->>R: Generate PNG
+        W->>R: blender -b model.blend -P render.py -- --output ... --render-id ...
+        R->>R: Render scene (native camera)
         R-->>W: Exit 0 + PNG written to volume
         W->>DB: UPDATE render SET status = "done"
     end

@@ -1,7 +1,17 @@
 FROM node:20-slim
 
-# Install Python (renderer) and openssl (Prisma)
-RUN apt-get update && apt-get install -y python3 python3-pil openssl && rm -rf /var/lib/apt/lists/*
+# Install Python (renderer), Blender (headless), and openssl (Prisma)
+# blender requires libglu1-mesa and libxi for headless operation
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pil \
+    openssl \
+    blender \
+    libglu1-mesa \
+    libxi6 \
+    libxrender1 \
+    libxxf86vm1 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Enable corepack for pnpm
 RUN corepack enable

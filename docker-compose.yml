@@ -42,6 +42,9 @@ services:
       REDIS_URL: ${REDIS_URL}
       NODE_ENV: development
       OUTPUT_DIR: /app/services/renderer/output
+      MODELS_DIR: /app/models
+      CHAIR_BLEND_SRC: /app/services/renderer/chair.blend
+      CHAIR_THUMB_SRC: /app/services/renderer/chair-thumb.png
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,6 +52,7 @@ services:
         condition: service_healthy
     volumes:
       - render_output:/app/services/renderer/output
+      - models_storage:/app/models
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
       interval: 10s
@@ -68,6 +72,9 @@ services:
       NODE_ENV: development
       RENDERER_SCRIPT: /app/services/renderer/render.py
       OUTPUT_DIR: /app/services/renderer/output
+      MODELS_DIR: /app/models
+      USE_BLENDER: "true"
+      BLENDER_BIN: blender
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,6 +82,7 @@ services:
         condition: service_healthy
     volumes:
       - render_output:/app/services/renderer/output
+      - models_storage:/app/models
 
   web:
     build:
@@ -94,3 +102,4 @@ services:
 volumes:
   postgres_data:
   render_output:
+  models_storage:
