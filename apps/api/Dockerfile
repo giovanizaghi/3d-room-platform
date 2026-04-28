@@ -19,6 +19,9 @@ COPY packages/queue packages/queue
 # Copy API app
 COPY apps/api apps/api
 
+# Copy renderer service (chair.blend used for auto-seeding on first boot)
+COPY services/renderer services/renderer
+
 # Install dependencies
 RUN pnpm install --frozen-lockfile
 

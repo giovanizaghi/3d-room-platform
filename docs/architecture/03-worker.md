@@ -2,14 +2,14 @@
 
 ## Overview
 
-The worker is a dedicated background process that consumes render jobs from the Redis queue (BullMQ) and executes them asynchronously. For each job, it invokes the Python renderer, writes the output image to the shared storage volume, and updates the job status in PostgreSQL. It operates entirely independently of the API, allowing rendering workloads to scale without affecting request handling.
+The worker is a dedicated background process that consumes render jobs from the Redis queue (BullMQ) and executes them asynchronously. For each job, it invokes Blender in headless mode, which renders the loaded .blend scene and writes the output PNG to the shared storage volume. The worker then updates the job status in PostgreSQL. It operates entirely independently of the API, allowing rendering workloads to scale without affecting request handling.
 
 ---
 
 ## Core Responsibilities
 
 - Consume jobs from the BullMQ queue
-- Execute the rendering process via the Python renderer
+- Execute the rendering process via Blender (headless)
 - Handle retries and transient failures automatically
 - Update job status in the database at each lifecycle stage
 - Log execution flow for observability and debugging
@@ -22,7 +22,7 @@ The worker is a dedicated background process that consumes render jobs from the 
 flowchart TD
     Queue[(Redis / BullMQ)]
     Worker[Worker Service]
-    Renderer[Python Renderer]
+    Renderer[Blender Renderer]
     Storage[(Storage Volume)]
     DB[(PostgreSQL)]
 

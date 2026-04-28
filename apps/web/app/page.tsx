@@ -1,259 +1,100 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { RenderStatus, type RenderJob } from "@repo/types";
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { type Model3D } from "@repo/types";
 
-const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
-const LOADING_MESSAGES = [
-  "Submitting render job…",
-  "Rendering in Cycles engine…",
-  "Blender rendering in progress…",
-  "Compositing final image…",
-  "Almost there, finalizing output…",
-];
-
-function Spinner() {
-  return (
-    <svg
-      className="animate-spin-slow h-5 w-5"
-      viewBox="0 0 24 24"
-      fill="none"
-    >
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="3"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
-    </svg>
-  );
-}
-
-function StatusDot({ status }: { status: RenderStatus }) {
-  const color = {
-    [RenderStatus.pending]: "bg-warning",
-    [RenderStatus.processing]: "bg-accent animate-pulse",
-    [RenderStatus.done]: "bg-success",
-  }[status];
-
-  return <span className={`inline-block h-2.5 w-2.5 rounded-full ${color}`} />;
-}
+type ModelSummary = Pick<Model3D, "id" | "name" | "description"> & {
+  thumbnailUrl: string | null;
+  createdAt: string;
+};
 
 export default function HomePage() {
-  const [loading, setLoading] = useState(false);
-  const [job, setJob] = useState<RenderJob | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [elapsed, setElapsed] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const startTimer = useCallback(() => {
-    setElapsed(0);
-    timerRef.current = setInterval(() => setElapsed((s) => s + 1), 1000);
-  }, []);
-
-  const stopTimer = useCallback(() => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-  }, []);
+  const [models, setModels] = useState<ModelSummary[]>([]);
 
   useEffect(() => {
-    return () => stopTimer();
-  }, [stopTimer]);
-
-  const loadingMessage = useMemo(() => {
-    const idx = Math.min(Math.floor(elapsed / 10), LOADING_MESSAGES.length - 1);
-    return LOADING_MESSAGES[idx];
-  }, [elapsed]);
-
-  async function pollStatus(renderId: string) {
-    const maxAttempts = 60;
-
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const response = await fetch(`${apiBase}/render/${renderId}`);
-
-      if (!response.ok) {
-        throw new Error(`Status request failed with ${response.status}`);
-      }
-
-      const data = (await response.json()) as RenderJob;
-      setJob(data);
-
-      if (data.status === RenderStatus.done) {
-        return;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-    }
-
-    throw new Error("Timed out while waiting for render to finish");
-  }
-
-  async function onGenerateRoom() {
-    setLoading(true);
-    setError(null);
-    startTimer();
-
-    try {
-      const response = await fetch(`${apiBase}/render`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          items: [
-            { sku: "sofa-modern", quantity: 1, color: "sand" },
-            { sku: "lamp-tube", quantity: 2, color: "matte-black" },
-          ],
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Render request failed with ${response.status}`);
-      }
-
-      const created = (await response.json()) as {
-        id: string;
-        status: RenderStatus;
-      };
-      setJob({
-        id: created.id,
-        status: created.status,
-        items: [],
-        imageUrl: null,
-        createdAt: new Date().toISOString(),
-      });
-
-      await pollStatus(created.id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unexpected error");
-    } finally {
-      stopTimer();
-      setLoading(false);
-    }
-  }
+    fetch(`${apiBase}/models`)
+      .then((r) => r.json())
+      .then((data: ModelSummary[]) => setModels(data))
+      .catch(() => {});
+  }, []);
 
   return (
-    <main className="min-h-screen flex items-center justify-center p-6">
-      {/* Ambient background glow */}
+    <main className="min-h-screen p-8">
+      {/* Ambient background */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute -top-40 -left-40 h-96 w-96 rounded-full bg-accent/10 blur-[120px]" />
         <div className="absolute -bottom-40 -right-40 h-96 w-96 rounded-full bg-accent/5 blur-[120px]" />
       </div>
 
-      <section className="relative w-full max-w-2xl animate-slide-up">
-        {/* Card */}
-        <div className="rounded-2xl border border-border bg-bg-card/80 backdrop-blur-sm p-8 shadow-2xl">
-          {/* Header */}
-          <div className="mb-8">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="h-8 w-8 rounded-lg bg-accent/20 flex items-center justify-center">
-                <svg className="h-4 w-4 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                </svg>
-              </div>
-              <h1 className="text-2xl font-semibold tracking-tight text-text-primary">
-                3D Room Rendering
-              </h1>
+      <div className="relative mx-auto max-w-5xl animate-slide-up">
+        {/* Header */}
+        <div className="mb-10">
+          <div className="flex items-center gap-3 mb-3">
+            <div className="h-9 w-9 rounded-lg bg-accent/20 flex items-center justify-center">
+              <svg className="h-5 w-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+              </svg>
             </div>
-            <p className="text-text-secondary text-sm leading-relaxed">
-              Submit a room composition and watch async rendering progress in
-              real time. Powered by Blender Cycles.
-            </p>
+            <h1 className="text-3xl font-semibold tracking-tight text-text-primary">3D Room Platform</h1>
           </div>
-
-          {/* Action */}
-          <button
-            onClick={onGenerateRoom}
-            disabled={loading}
-            className={`
-              group relative w-full flex items-center justify-center gap-3
-              rounded-xl px-6 py-3.5 text-sm font-medium
-              transition-all duration-200 cursor-pointer
-              ${loading
-                ? "bg-accent/20 text-accent-light border border-accent/30 animate-glow-pulse"
-                : "bg-accent text-white hover:bg-accent-light hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-accent/25 hover:shadow-accent/40"
-              }
-              disabled:cursor-not-allowed
-            `}
-          >
-            {loading ? (
-              <>
-                <Spinner />
-                <span>{loadingMessage}</span>
-              </>
-            ) : (
-              <>
-                <svg className="h-4 w-4 transition-transform group-hover:rotate-12" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <span>Generate Room</span>
-              </>
-            )}
-          </button>
-
-          {/* Loading info */}
-          {loading && (
-            <div className="mt-5 flex items-center justify-between text-xs animate-fade-in">
-              <div className="flex items-center gap-2 text-text-muted">
-                <span className="font-mono">Elapsed: {elapsed}s</span>
-              </div>
-              <span className="text-text-muted font-mono">
-                Estimated: ~15–30s
-              </span>
-            </div>
-          )}
-
-          {/* Status */}
-          {job && (
-            <div className="mt-6 flex items-center gap-2.5 animate-fade-in">
-              <StatusDot status={job.status} />
-              <span className="text-sm text-text-secondary">
-                {job.status === RenderStatus.done
-                  ? "Render complete"
-                  : job.status === RenderStatus.processing
-                    ? "Processing"
-                    : "Pending"}
-              </span>
-              <span className="ml-auto font-mono text-xs text-text-muted">
-                {job.id.slice(0, 8)}
-              </span>
-            </div>
-          )}
-
-          {/* Rendered image */}
-          {job?.status === RenderStatus.done && job?.imageUrl && (
-            <div className="mt-6 animate-fade-in">
-              <div className="rounded-xl border border-border bg-black/30 p-4 shadow-inner">
-                <img
-                  src={`${apiBase}/render/${job.id}/image`}
-                  alt="Rendered room"
-                  className="w-full rounded-lg shadow-lg shadow-accent/10"
-                />
-              </div>
-              <div className="mt-3 flex items-center justify-between text-xs text-text-muted">
-                <span>Blender Cycles · 800×600 · 32 samples</span>
-                <span className="font-mono">Rendered in {elapsed}s</span>
-              </div>
-            </div>
-          )}
-
-          {/* Error */}
-          {error && (
-            <div className="mt-5 rounded-lg border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger animate-fade-in">
-              {error}
-            </div>
-          )}
+          <p className="text-text-secondary text-sm leading-relaxed max-w-lg">
+            Select a model to render it with Blender Cycles, or upload a new .blend file.
+          </p>
         </div>
-      </section>
+
+        {/* Model grid */}
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+          {models.map((model) => (
+            <Link
+              key={model.id}
+              href={`/models/${model.id}`}
+              className="group rounded-2xl border border-border bg-bg-card hover:bg-bg-card-hover hover:border-accent/40 transition-all duration-200 overflow-hidden"
+            >
+              {/* Thumbnail */}
+              <div className="aspect-square w-full bg-black/30 flex items-center justify-center overflow-hidden">
+                {model.thumbnailUrl ? (
+                  <img
+                    src={`${apiBase}${model.thumbnailUrl}`}
+                    alt={model.name}
+                    className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-300"
+                  />
+                ) : (
+                  <svg className="h-10 w-10 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                  </svg>
+                )}
+              </div>
+
+              {/* Info */}
+              <div className="p-4">
+                <p className="text-sm font-medium text-text-primary truncate">{model.name}</p>
+                {model.description && (
+                  <p className="mt-1 text-xs text-text-muted line-clamp-2">{model.description}</p>
+                )}
+                <p className="mt-2 text-xs text-text-muted font-mono">
+                  {new Date(model.createdAt).toLocaleDateString()}
+                </p>
+              </div>
+            </Link>
+          ))}
+
+          {/* Add new model card */}
+          <Link
+            href="/models/new"
+            className="group rounded-2xl border border-dashed border-border hover:border-accent/60 bg-bg-card hover:bg-bg-card-hover transition-all duration-200 flex flex-col items-center justify-center aspect-square sm:aspect-auto min-h-[200px]"
+          >
+            <div className="h-12 w-12 rounded-full border border-border group-hover:border-accent/60 flex items-center justify-center transition-colors duration-200 mb-3">
+              <svg className="h-6 w-6 text-text-muted group-hover:text-accent transition-colors duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+            </div>
+            <p className="text-sm text-text-muted group-hover:text-text-secondary transition-colors duration-200">Add model</p>
+          </Link>
+        </div>
+      </div>
     </main>
   );
 }

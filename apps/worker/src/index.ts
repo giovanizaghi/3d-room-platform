@@ -14,13 +14,13 @@ const rootDir = resolve(process.cwd(), "../..");
 const outputDir = process.env.OUTPUT_DIR ?? resolve(rootDir, "services/renderer/output");
 const rendererDir = resolve(rootDir, "services/renderer");
 const rendererScript = process.env.RENDERER_SCRIPT ?? resolve(rendererDir, "render.py");
-const blendFile = process.env.BLEND_FILE ?? resolve(rendererDir, "chair.blend");
+const fallbackBlendFile = process.env.BLEND_FILE ?? resolve(rendererDir, "chair.blend");
 const blenderBin = process.env.BLENDER_BIN ?? "blender";
 const useBlender = (process.env.USE_BLENDER ?? "true") === "true";
 
 mkdirSync(outputDir, { recursive: true });
 
-function buildCommand(renderId: string, items: unknown[]): { bin: string; args: string[] } {
+function buildCommand(renderId: string, items: unknown[], modelBlendFile: string): { bin: string; args: string[] } {
   const outputPath = resolve(outputDir, `${renderId}.png`);
   const itemsJson = JSON.stringify(items);
 
@@ -28,26 +28,27 @@ function buildCommand(renderId: string, items: unknown[]): { bin: string; args: 
     return {
       bin: blenderBin,
       args: [
-        "-b", blendFile,
+        "-b", modelBlendFile,
         "-P", rendererScript,
         "--",
         "--output", outputPath,
         "--render-id", renderId,
         "--items", itemsJson,
+        "--blend-file", modelBlendFile,
       ],
     };
   }
 
   return {
     bin: process.env.PYTHON_BIN ?? "python3",
-    args: [rendererScript, "--output", outputPath, "--render-id", renderId, "--items", itemsJson],
+    args: [rendererScript, "--output", outputPath, "--render-id", renderId, "--items", itemsJson, "--blend-file", modelBlendFile],
   };
 }
 
-function runRenderer(renderId: string, items: unknown[]): Promise<string> {
+function runRenderer(renderId: string, items: unknown[], modelBlendFile: string): Promise<string> {
   return new Promise((resolveImage, reject) => {
     const outputPath = resolve(outputDir, `${renderId}.png`);
-    const { bin, args } = buildCommand(renderId, items);
+    const { bin, args } = buildCommand(renderId, items, modelBlendFile);
 
     console.log(JSON.stringify({
       event: "render_started",
@@ -106,10 +107,14 @@ const worker = new Worker<RenderJobPayload>(
       data: { status: RenderStatus.processing }
     });
 
-    const renderRecord = await prisma.render.findUnique({ where: { id: renderId } });
+    const renderRecord = await prisma.render.findUnique({
+      where: { id: renderId },
+      include: { model: true },
+    });
     const items = (renderRecord?.items ?? []) as unknown[];
+    const modelBlendFile = renderRecord?.model?.blendFilePath ?? fallbackBlendFile;
 
-    const imagePath = await runRenderer(renderId, items);
+    const imagePath = await runRenderer(renderId, items, modelBlendFile);
     const { size: fileSizeBytes } = statSync(imagePath);
 
     await prisma.render.update({
@@ -156,7 +161,7 @@ console.log(JSON.stringify({
   event: "worker_started",
   mode: useBlender ? "blender" : "python",
   blenderBin: useBlender ? blenderBin : null,
-  blendFile: useBlender ? blendFile : null,
+  fallbackBlendFile: useBlender ? fallbackBlendFile : null,
   rendererScript,
   outputDir
 }));
