@@ -11,8 +11,8 @@ import {
 import { RenderStatus } from "@repo/types";
 
 const rootDir = resolve(process.cwd(), "../..");
-const outputDir = resolve(rootDir, "services/renderer/output");
-const rendererScript = resolve(rootDir, "services/renderer/render.py");
+const outputDir = process.env.OUTPUT_DIR ?? resolve(rootDir, "services/renderer/output");
+const rendererScript = process.env.RENDERER_SCRIPT ?? resolve(rootDir, "services/renderer/render.py");
 
 mkdirSync(outputDir, { recursive: true });
 
@@ -44,6 +44,12 @@ const worker = new Worker<RenderJobPayload>(
   async (job) => {
     const { renderId } = job.data;
 
+    console.log(JSON.stringify({
+      event: "job_started",
+      renderId,
+      attempt: job.attemptsMade + 1
+    }));
+
     await prisma.render.update({
       where: { id: renderId },
       data: { status: RenderStatus.processing }
@@ -55,9 +61,15 @@ const worker = new Worker<RenderJobPayload>(
       where: { id: renderId },
       data: {
         status: RenderStatus.done,
-        imageUrl: imagePath
+        imageUrl: `/renders/${renderId}.png`
       }
     });
+
+    console.log(JSON.stringify({
+      event: "job_completed",
+      renderId,
+      outputPath: imagePath
+    }));
   },
   {
     connection: queueConnection,
@@ -68,11 +80,24 @@ const worker = new Worker<RenderJobPayload>(
 worker.on("failed", async (job, err) => {
   if (!job) return;
 
-  console.error(`Job ${job.id} failed:`, err.message);
-  await prisma.render.update({
-    where: { id: job.data.renderId },
-    data: { status: RenderStatus.pending }
-  });
+  console.log(JSON.stringify({
+    event: "job_failed",
+    renderId: job.data.renderId,
+    jobId: job.id,
+    error: err.message,
+    attempt: job.attemptsMade + 1
+  }));
+
+  if (job.attemptsMade >= 2) {
+    await prisma.render.update({
+      where: { id: job.data.renderId },
+      data: { status: RenderStatus.pending }
+    });
+  }
 });
 
-console.log("Worker started and waiting for render jobs...");
+console.log(JSON.stringify({
+  event: "worker_started",
+  rendererScript,
+  outputDir
+}));

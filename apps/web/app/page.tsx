@@ -87,10 +87,14 @@ export default function HomePage() {
           {loading ? "Generating..." : "Generate Room"}
         </button>
         <p className="status">{statusLabel}</p>
-        {job?.imageUrl ? (
-          <p>
-            Render output: <code>{job.imageUrl}</code>
-          </p>
+        {job?.status === RenderStatus.done && job?.imageUrl ? (
+          <div className="image-container">
+            <img
+              src={`${apiBase}/render/${job.id}/image`}
+              alt="Rendered room"
+              className="rendered-image"
+            />
+          </div>
         ) : null}
         {error ? <p className="error">{error}</p> : null}
       </section>

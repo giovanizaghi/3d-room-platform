@@ -1,0 +1,15 @@
+node_modules
+.pnpm-store
+.git
+.gitignore
+.DS_Store
+*.log
+.next
+dist
+coverage
+.env
+.env.local
+services/renderer/output/*.png
+README.md
+.vscode
+.idea

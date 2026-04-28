@@ -61,6 +61,23 @@ button:disabled {
   color: var(--danger);
 }
 
+.image-container {
+  margin-top: 24px;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 12px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.rendered-image {
+  max-width: 100%;
+  max-height: 400px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(47, 42, 36, 0.1);
+}
+
 @keyframes reveal {
   from {
     transform: translateY(10px);

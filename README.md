@@ -69,40 +69,117 @@ The queue isolates slow rendering from request/response APIs and allows horizont
 
 ## Prerequisites
 
-- Node.js 20+
-- pnpm 9+
-- Docker
-- Python 3.10+
-- Blender with bpy support (optional for true 3D render; script has a local fallback)
+- **For Docker**: Docker Engine + Docker Compose
+- **For local dev**: Node.js 20+, pnpm 9+
+- **Python** (in Docker): Included in worker container image
+- **Blender** (optional): Script has mock PNG fallback for testing
 
-## Setup
+## Quick Start with Docker
+
+The simplest way to run the full system:
+
+```bash
+pnpm docker:up
+```
+
+This builds and starts all services (postgres, redis, api, worker, web).
+
+On first run, apply the database migration:
+
+```bash
+docker compose exec api pnpm --filter @repo/db db:deploy
+```
+
+Verify the system is working:
+
+```bash
+# Check API health
+curl http://localhost:4000/health
+
+# Create a render job
+curl -X POST http://localhost:4000/render \
+  -H 'Content-Type: application/json' \
+  -d '{"items":[{"sku":"chair","quantity":1}]}'
+
+# Poll job status (returns pending → processing → done)
+curl http://localhost:4000/render/<id>
+
+# View rendered image (once status is done)
+curl http://localhost:4000/render/<id>/image --output render.png
+```
+
+Open http://localhost:3000 to see the web UI. Click "Generate Room" to trigger a render job and watch the image appear.
+
+To stop all services:
+
+```bash
+pnpm docker:down
+```
+
+## Local Development
+
+For iterative development without Docker:
+
+### Setup
 
 1. Install dependencies:
-   - pnpm install
-2. Start infrastructure:
-   - docker compose up -d
-3. Copy env file:
-   - cp .env.example .env
-4. Generate Prisma client and migrate:
-   - pnpm db:migrate
+   ```bash
+   pnpm install
+   ```
 
-## Run Services
+2. Start infrastructure (Postgres + Redis only):
+   ```bash
+   docker compose up postgres redis -d
+   ```
+
+3. Run database migrations:
+   ```bash
+   pnpm db:migrate
+   ```
+
+### Run Services
 
 In separate terminals:
 
-- pnpm dev:api
-- pnpm dev:worker
-- pnpm dev:web
+```bash
+pnpm dev:api    # Express API on port 4000
+pnpm dev:worker # BullMQ worker
+pnpm dev:web    # Next.js UI on port 3000
+```
 
-Endpoints:
+## API Endpoints
 
-- API: http://localhost:4000
-- Web: http://localhost:3000
+- `GET /health` — health check
+- `POST /render` — create render job (accepts `{ items: Array<{sku, quantity, color?}> }`)
+- `GET /render/:id` — get job status (returns `{ id, status, items, imageUrl, createdAt }`)
+- `GET /render/:id/image` — download rendered PNG image
 
-## Flow
+## System Flow
 
-1. Click "Generate Room" in the web app.
-2. Web app calls POST /render on API.
-3. API stores a render request and pushes a BullMQ job.
-4. Worker consumes the job, calls Python renderer, updates DB.
-5. Web app polls GET /render/:id until status is done.
+1. User clicks "Generate Room" button on web UI (http://localhost:3000)
+2. Web calls `POST /render` with room composition (furniture items)
+3. API creates Render record in Postgres with status `pending`
+4. API enqueues job to BullMQ Redis queue
+5. Worker picks up job, updates status to `processing`
+6. Worker spawns Python renderer (mock: generates tiny PNG; real: uses Blender)
+7. Worker updates Render record: status → `done`, stores image URL
+8. Web UI polls `GET /render/:id` and detects completion
+9. Web fetches image via `GET /render/:id/image` and displays it
+
+## Design Notes
+
+- **Async Processing**: BullMQ isolates slow rendering from HTTP handlers, enabling independent API/Worker scaling
+- **Mock Renderer**: Python fallback generates valid PNG when Blender unavailable (no external dependencies needed for demo)
+- **Structured Logging**: JSON-formatted logs on API/Worker for observability
+- **Retry Strategy**: Worker uses 3-attempt exponential backoff (2s initial delay) before marking job failed
+- **Shared Volume**: Rendered images stored in Docker volume accessible to both API and Worker containers
+
+## Troubleshooting
+
+**Services won't start?** Check Docker daemon is running: `docker ps`
+
+**Migration fails?** Ensure postgres is healthy before running: `docker compose up postgres -d && sleep 5`
+
+**Image endpoint 404?** Render job must complete first. Check `GET /render/:id` status is `done`.
+
+**Port conflicts?** Change ports in `docker-compose.yml` if 3000/4000 are in use locally.

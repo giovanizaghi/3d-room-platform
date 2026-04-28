@@ -1,0 +1,27 @@
+FROM node:20-slim
+
+# Enable corepack for pnpm
+RUN corepack enable
+
+WORKDIR /app
+
+# Copy workspace configs and lock file
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+
+# Copy packages needed by API
+COPY packages/types packages/types
+COPY packages/db packages/db
+COPY packages/queue packages/queue
+
+# Copy API app
+COPY apps/api apps/api
+
+# Install dependencies
+RUN pnpm install --frozen-lockfile
+
+# Generate Prisma client
+RUN pnpm --filter @repo/db prisma generate
+
+EXPOSE 4000
+
+CMD ["pnpm", "--filter", "@apps/api", "dev"]
