@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "architecture/05-database.md",
+                "file": "architecture/06-future-rendering.md",
                 "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "05-database"
+              "title": "06-future-rendering"
             }
           }
         ]
@@ -94,7 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "architecture/05-database.md",
+                "file": "architecture/06-future-rendering.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks for 05-database"
+              "title": "Backlinks for 06-future-rendering"
             }
           },
           {
@@ -113,12 +113,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "architecture/05-database.md",
+                "file": "architecture/06-future-rendering.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links from 05-database"
+              "title": "Outgoing links from 06-future-rendering"
             }
           },
           {
@@ -156,13 +156,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "architecture/05-database.md",
+                "file": "architecture/06-future-rendering.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of 05-database"
+              "title": "Outline of 06-future-rendering"
             }
           }
         ]
@@ -185,8 +185,9 @@
   },
   "active": "3278f15649a241c7",
   "lastOpenFiles": [
-    "architecture/04-queue.md",
     "architecture/05-database.md",
+    "architecture/06-future-rendering.md",
+    "architecture/04-queue.md",
     "architecture/01-overview.md",
     "architecture/03-worker.md",
     "architecture/02-api.md"
