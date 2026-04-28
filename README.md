@@ -4,15 +4,41 @@ Production-minded monorepo bootstrap for a 3D rendering e-commerce flow.
 
 ## Architecture
 
-- apps/web: Next.js UI that submits render jobs and polls for completion.
-- apps/api: Express API that persists requests and enqueues async jobs.
-- apps/worker: BullMQ worker that calls the Python renderer and updates job state.
-- services/renderer: Blender-compatible Python renderer script.
-- packages/types: Shared TypeScript contracts.
-- packages/db: Prisma schema + client wrapper.
-- packages/queue: Shared BullMQ queue and Redis connection config.
+This project implements a distributed async rendering pipeline. The system is composed of independent API, Worker, Queue, and Database layers, each with a well-defined responsibility. The design follows production patterns while remaining simple enough for an MVP.
 
-The queue isolates slow rendering from request/response APIs and allows horizontal worker scaling.
+```mermaid
+flowchart LR
+    FE[Frontend] --> API
+    API --> Redis
+    Redis --> Worker
+    Worker --> Python
+    Python --> Storage
+```
+
+### Documentation
+
+- [System Overview](docs/architecture/01-overview.md)
+- [API Layer](docs/architecture/02-api.md)
+- [Worker Layer](docs/architecture/03-worker.md)
+- [Queue Layer](docs/architecture/04-queue.md)
+- [Database Layer](docs/architecture/05-database.md)
+
+### Why This Architecture
+
+- Demonstrates async processing patterns with decoupled producers and consumers
+- Shows clear separation of concerns across independently deployable services
+- Designed for horizontal scalability at the worker tier
+- Simplified for MVP while preserving production-grade patterns
+
+### Service Overview
+
+- `apps/web`: Next.js UI that submits render jobs and polls for completion.
+- `apps/api`: Express API that persists requests and enqueues async jobs.
+- `apps/worker`: BullMQ worker that calls the Python renderer and updates job state.
+- `services/renderer`: Blender-compatible Python renderer script.
+- `packages/types`: Shared TypeScript contracts.
+- `packages/db`: Prisma schema + client wrapper.
+- `packages/queue`: Shared BullMQ queue and Redis connection config.
 
 ## Folder Structure
 
