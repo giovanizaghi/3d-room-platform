@@ -12,29 +12,80 @@ import { RenderStatus } from "@repo/types";
 
 const rootDir = resolve(process.cwd(), "../..");
 const outputDir = process.env.OUTPUT_DIR ?? resolve(rootDir, "services/renderer/output");
-const rendererScript = process.env.RENDERER_SCRIPT ?? resolve(rootDir, "services/renderer/render.py");
+const rendererDir = resolve(rootDir, "services/renderer");
+const rendererScript = process.env.RENDERER_SCRIPT ?? resolve(rendererDir, "render.py");
+const blendFile = process.env.BLEND_FILE ?? resolve(rendererDir, "chair.blend");
+const blenderBin = process.env.BLENDER_BIN ?? "blender";
+const useBlender = (process.env.USE_BLENDER ?? "true") === "true";
 
 mkdirSync(outputDir, { recursive: true });
+
+function buildCommand(renderId: string, items: unknown[]): { bin: string; args: string[] } {
+  const outputPath = resolve(outputDir, `${renderId}.png`);
+  const itemsJson = JSON.stringify(items);
+
+  if (useBlender) {
+    return {
+      bin: blenderBin,
+      args: [
+        "-b", blendFile,
+        "-P", rendererScript,
+        "--",
+        "--output", outputPath,
+        "--render-id", renderId,
+        "--items", itemsJson,
+      ],
+    };
+  }
+
+  return {
+    bin: process.env.PYTHON_BIN ?? "python3",
+    args: [rendererScript, "--output", outputPath, "--render-id", renderId, "--items", itemsJson],
+  };
+}
 
 function runRenderer(renderId: string, items: unknown[]): Promise<string> {
   return new Promise((resolveImage, reject) => {
     const outputPath = resolve(outputDir, `${renderId}.png`);
+    const { bin, args } = buildCommand(renderId, items);
 
-    const child = spawn(
-      process.env.PYTHON_BIN ?? "python3",
-      [rendererScript, "--output", outputPath, "--render-id", renderId, "--items", JSON.stringify(items)],
-      { stdio: "inherit" }
-    );
+    console.log(JSON.stringify({
+      event: "render_started",
+      renderId,
+      mode: useBlender ? "blender" : "python",
+      command: [bin, ...args].join(" "),
+    }));
+
+    const child = spawn(bin, args, { stdio: "inherit" });
 
     child.on("exit", (code) => {
       if (code === 0) {
+        console.log(JSON.stringify({
+          event: "render_completed",
+          renderId,
+          outputPath,
+        }));
         resolveImage(outputPath);
       } else {
+        console.log(JSON.stringify({
+          event: "render_failed",
+          renderId,
+          exitCode: code,
+          command: bin,
+        }));
         reject(new Error(`Renderer exited with code ${code}`));
       }
     });
 
-    child.on("error", reject);
+    child.on("error", (err) => {
+      console.log(JSON.stringify({
+        event: "render_spawn_error",
+        renderId,
+        error: err.message,
+        command: bin,
+      }));
+      reject(err);
+    });
   });
 }
 
@@ -103,6 +154,9 @@ worker.on("failed", async (job, err) => {
 
 console.log(JSON.stringify({
   event: "worker_started",
+  mode: useBlender ? "blender" : "python",
+  blenderBin: useBlender ? blenderBin : null,
+  blendFile: useBlender ? blendFile : null,
   rendererScript,
   outputDir
 }));

@@ -1,8 +1,21 @@
 #!/usr/bin/env python3
+"""
+Render script supporting two invocation modes:
+
+  1. Blender headless (primary):
+       blender -b chair.blend -P render.py -- --output /path/out.png --render-id <id> --items <json>
+     The .blend scene is already loaded by Blender when this script runs.
+     bpy is available in the interpreter.
+
+  2. Direct Python (fallback / local dev without Blender):
+       python3 render.py --output /path/out.png --render-id <id> --items <json>
+     bpy is not available; a mock PNG is generated via Pillow instead.
+"""
 import argparse
-import os
 import json
+import os
 import random
+import sys
 
 
 PALETTE = [
@@ -19,7 +32,6 @@ def _t(draw, xy, text, fill):
     """Draw text using only ASCII-safe characters and the built-in bitmap font."""
     from PIL import ImageFont
     font = ImageFont.load_default()
-    # Encode to latin-1, replacing any unencodable chars with '?'
     safe = text.encode("latin-1", errors="replace").decode("latin-1")
     draw.text(xy, safe, fill=fill, font=font)
 
@@ -67,38 +79,78 @@ def write_fallback_png(path: str, render_id: str = "", items: list = None) -> No
     print("Fallback PNG written to " + path + " (" + str(os.path.getsize(path)) + " bytes)")
 
 
-def render_with_blender(path: str) -> None:
-    import bpy
+def render_with_blender(output_path: str) -> None:
+    """
+    Render the currently loaded .blend scene to output_path.
 
-    bpy.ops.wm.read_factory_settings(use_empty=True)
-    bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 0))
+    This function is only called when the script is running inside Blender
+    (bpy is available). The scene has already been loaded via the -b flag.
+    We only configure render settings and trigger the render.
+    """
+    import bpy  # type: ignore  # only available inside Blender
 
-    bpy.context.scene.render.image_settings.file_format = "PNG"
-    bpy.context.scene.render.filepath = path
-    bpy.context.scene.render.resolution_x = 800
-    bpy.context.scene.render.resolution_y = 600
+    scene = bpy.context.scene
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.filepath = output_path
+    scene.render.resolution_x = 800
+    scene.render.resolution_y = 600
+    scene.render.resolution_percentage = 100
+
+    # Disable denoising — OpenImageDenoiser is not available in the apt-packaged
+    # Blender build. Without this, render.render() raises an error and aborts.
+    if hasattr(scene, "cycles"):
+        scene.cycles.use_denoising = False
+        # Reduce sample count for fast CPU rendering (MVP).
+        # 32 samples is sufficient to produce a visible, non-noisy result
+        # without the multi-minute render times of the default 512 samples.
+        scene.cycles.samples = 32
+
+    print(f"[render.py] Rendering scene to {output_path} ...")
     bpy.ops.render.render(write_still=True)
+    print(f"[render.py] Render complete: {output_path}")
+
+
+def parse_args() -> argparse.Namespace:
+    """
+    Parse arguments whether invoked directly (python3) or via Blender CLI.
+
+    When Blender runs the script, sys.argv contains Blender's own args followed
+    by '--' and then the script's args. Extract only the script-specific portion.
+    """
+    if "--" in sys.argv:
+        # Blender invocation: blender -b file.blend -P script.py -- <script args>
+        script_argv = sys.argv[sys.argv.index("--") + 1:]
+    else:
+        # Direct invocation: python3 render.py <args>
+        script_argv = sys.argv[1:]
+
+    parser = argparse.ArgumentParser(description="Render a room artifact")
+    parser.add_argument("--output", required=True, help="Absolute output image path")
+    parser.add_argument("--render-id", default="", help="Render job ID (for labeling)")
+    parser.add_argument("--items", default="[]", help="JSON array of room items")
+    return parser.parse_args(script_argv)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Render a minimal room artifact")
-    parser.add_argument("--output", required=True, help="Output image path")
-    parser.add_argument("--render-id", default="", help="Render job ID (for labeling)")
-    parser.add_argument("--items", default="[]", help="JSON array of room items")
-    args = parser.parse_args()
+    args = parse_args()
 
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
 
     try:
         items = json.loads(args.items)
     except json.JSONDecodeError:
         items = []
 
+    # Try Blender render first (bpy available when running inside Blender)
     try:
         render_with_blender(args.output)
-        print(f"Rendered image with bpy to {args.output}")
+    except ImportError:
+        # bpy not available — running outside Blender (local dev / CI)
+        print("[render.py] bpy unavailable, using fallback PNG renderer")
+        write_fallback_png(args.output, render_id=args.render_id, items=items)
     except Exception as exc:
-        print(f"bpy render unavailable ({exc}), writing fallback PNG instead")
+        # Blender render failed unexpectedly — fallback so the job isn't lost
+        print(f"[render.py] Blender render failed ({exc}), using fallback PNG renderer")
         write_fallback_png(args.output, render_id=args.render_id, items=items)
 
 

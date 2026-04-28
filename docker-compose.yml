@@ -67,7 +67,10 @@ services:
       REDIS_URL: ${REDIS_URL}
       NODE_ENV: development
       RENDERER_SCRIPT: /app/services/renderer/render.py
+      BLEND_FILE: /app/services/renderer/chair.blend
       OUTPUT_DIR: /app/services/renderer/output
+      USE_BLENDER: "true"
+      BLENDER_BIN: blender
     depends_on:
       postgres:
         condition: service_healthy
