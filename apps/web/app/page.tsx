@@ -29,6 +29,7 @@ export default function HomePage() {
       setJob(data);
 
       if (data.status === RenderStatus.done) {
+        console.log("[render] image URL:", `${apiBase}/render/${renderId}/image`);
         return;
       }
 

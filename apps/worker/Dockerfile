@@ -1,7 +1,7 @@
 FROM node:20-slim
 
 # Install Python (renderer) and openssl (Prisma)
-RUN apt-get update && apt-get install -y python3 openssl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y python3 python3-pil openssl && rm -rf /var/lib/apt/lists/*
 
 # Enable corepack for pnpm
 RUN corepack enable

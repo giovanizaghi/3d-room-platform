@@ -1,6 +1,6 @@
 import cors from "cors";
 import express from "express";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { prisma } from "@repo/db";
 import { createRenderQueue } from "@repo/queue";
@@ -86,11 +86,14 @@ app.get("/render/:id/image", async (req, res) => {
 
   try {
     const imagePath = resolve(outputDir, `${renderId}.png`);
+    const { size: fileSizeBytes } = await stat(imagePath);
     const imageData = await readFile(imagePath);
 
     console.log(JSON.stringify({
       event: "image_served",
-      renderId
+      renderId,
+      filePath: imagePath,
+      fileSizeBytes
     }));
 
     res.setHeader("Content-Type", "image/png");
@@ -99,6 +102,7 @@ app.get("/render/:id/image", async (req, res) => {
     console.log(JSON.stringify({
       event: "image_not_found",
       renderId,
+      filePath: resolve(outputDir, `${renderId}.png`),
       error: err instanceof Error ? err.message : "unknown error"
     }));
     res.status(404).json({ error: "image not found" });

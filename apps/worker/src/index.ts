@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { Worker } from "bullmq";
 import { prisma } from "@repo/db";
@@ -16,13 +16,13 @@ const rendererScript = process.env.RENDERER_SCRIPT ?? resolve(rootDir, "services
 
 mkdirSync(outputDir, { recursive: true });
 
-function runRenderer(renderId: string): Promise<string> {
+function runRenderer(renderId: string, items: unknown[]): Promise<string> {
   return new Promise((resolveImage, reject) => {
     const outputPath = resolve(outputDir, `${renderId}.png`);
 
     const child = spawn(
       process.env.PYTHON_BIN ?? "python3",
-      [rendererScript, "--output", outputPath],
+      [rendererScript, "--output", outputPath, "--render-id", renderId, "--items", JSON.stringify(items)],
       { stdio: "inherit" }
     );
 
@@ -55,7 +55,11 @@ const worker = new Worker<RenderJobPayload>(
       data: { status: RenderStatus.processing }
     });
 
-    const imagePath = await runRenderer(renderId);
+    const renderRecord = await prisma.render.findUnique({ where: { id: renderId } });
+    const items = (renderRecord?.items ?? []) as unknown[];
+
+    const imagePath = await runRenderer(renderId, items);
+    const { size: fileSizeBytes } = statSync(imagePath);
 
     await prisma.render.update({
       where: { id: renderId },
@@ -66,9 +70,10 @@ const worker = new Worker<RenderJobPayload>(
     });
 
     console.log(JSON.stringify({
-      event: "job_completed",
+      event: "render_file_created",
       renderId,
-      outputPath: imagePath
+      outputPath: imagePath,
+      fileSizeBytes
     }));
   },
   {
