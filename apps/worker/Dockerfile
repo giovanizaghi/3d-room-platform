@@ -41,4 +41,4 @@ RUN pnpm --filter @repo/db exec prisma generate
 # Create output directory for rendered images
 RUN mkdir -p /app/services/renderer/output
 
-CMD ["pnpm", "--filter", "@apps/worker", "dev"]
+CMD ["pnpm", "--filter", "@apps/worker", "start"]

@@ -30,4 +30,4 @@ RUN pnpm --filter @repo/db exec prisma generate
 
 EXPOSE 4000
 
-CMD ["pnpm", "--filter", "@apps/api", "dev"]
+CMD ["pnpm", "--filter", "@apps/api", "start"]
