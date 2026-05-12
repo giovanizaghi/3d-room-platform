@@ -48,6 +48,7 @@ export default function ModelPage({ params }: { params: { id: string } }) {
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [finalElapsed, setFinalElapsed] = useState<number | null>(null);
+  const [aiEnhance, setAiEnhance] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -99,7 +100,7 @@ export default function ModelPage({ params }: { params: { id: string } }) {
       const res = await fetch(`${apiBase}/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ modelId: id }),
+        body: JSON.stringify({ modelId: id, aiEnhance }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({})) as { error?: string };
@@ -168,6 +169,30 @@ export default function ModelPage({ params }: { params: { id: string } }) {
               </div>
             </div>
           )}
+
+          {/* AI Enhancement toggle */}
+          <div className="mb-4 flex items-center justify-between rounded-xl border border-border bg-bg-card/50 px-4 py-3">
+            <div>
+              <p className="text-sm font-medium text-text-primary">AI Enhancement</p>
+              <p className="text-xs text-text-muted mt-0.5">Uses EEVEE + OpenAI to improve the output</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={aiEnhance}
+              onClick={() => setAiEnhance((v) => !v)}
+              disabled={loading}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
+                aiEnhance ? "bg-accent" : "bg-border"
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-md ring-0 transition-transform duration-200 ${
+                  aiEnhance ? "translate-x-5" : "translate-x-0.5"
+                }`}
+              />
+            </button>
+          </div>
 
           {/* Generate render button */}
           <button

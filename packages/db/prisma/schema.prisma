@@ -29,6 +29,7 @@ model Render {
   status    RenderStatus @default(pending)
   items     Json?
   imageUrl  String?
+  aiEnhance Boolean      @default(false)
   createdAt DateTime     @default(now())
 
   modelId String

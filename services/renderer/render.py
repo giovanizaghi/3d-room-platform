@@ -16,8 +16,10 @@ import sys
 
 import bpy  # type: ignore  # provided by Blender's embedded Python
 
+from ai_enhance import enhance_image
 
-def render_scene(output_path: str) -> None:
+
+def render_scene(output_path: str, use_eevee: bool = False) -> None:
     scene = bpy.context.scene
     scene.render.image_settings.file_format = "PNG"
     scene.render.filepath = output_path
@@ -25,12 +27,18 @@ def render_scene(output_path: str) -> None:
     scene.render.resolution_y = 600
     scene.render.resolution_percentage = 100
 
-    # Disable denoising — OpenImageDenoiser is not available in the apt-packaged
-    # Blender build. Without this, render.render() raises an error and aborts.
-    if hasattr(scene, "cycles"):
-        scene.cycles.use_denoising = False
-        # 32 samples is sufficient for a visible result on CPU without long render times.
-        scene.cycles.samples = 32
+    if use_eevee:
+        # EEVEE is significantly faster than Cycles — ideal when AI will post-process the image.
+        scene.render.engine = "BLENDER_EEVEE_NEXT"
+        print("[render.py] Render engine: EEVEE (fast mode for AI enhancement)")
+    else:
+        # Disable denoising — OpenImageDenoiser is not available in the apt-packaged
+        # Blender build. Without this, render.render() raises an error and aborts.
+        if hasattr(scene, "cycles"):
+            scene.cycles.use_denoising = False
+            # 32 samples is sufficient for a visible result on CPU without long render times.
+            scene.cycles.samples = 32
+        print("[render.py] Render engine: Cycles")
 
     print(f"[render.py] Rendering scene to {output_path} ...")
     bpy.ops.render.render(write_still=True)
@@ -46,6 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--render-id", default="", help="Render job ID (for logging)")
     parser.add_argument("--items", default="[]", help="JSON array of room items")
     parser.add_argument("--blend-file", default="", help="Path to the .blend file (informational; loaded via -b)")
+    parser.add_argument("--ai-enhance", action="store_true", help="Send rendered image to OpenAI for AI enhancement")
     return parser.parse_args(script_argv)
 
 
@@ -55,9 +64,12 @@ def main() -> None:
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
 
     blend_file = args.blend_file or "(loaded via -b flag)"
-    print(f"[render.py] blend_file={blend_file}  render_id={args.render_id}  output={args.output}")
+    print(f"[render.py] blend_file={blend_file}  render_id={args.render_id}  output={args.output}  ai_enhance={args.ai_enhance}")
 
-    render_scene(args.output)
+    render_scene(args.output, use_eevee=args.ai_enhance)
+
+    if args.ai_enhance:
+        enhance_image(args.output)
 
 
 if __name__ == "__main__":

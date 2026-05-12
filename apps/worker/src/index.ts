@@ -20,9 +20,11 @@ const useBlender = (process.env.USE_BLENDER ?? "true") === "true";
 
 mkdirSync(outputDir, { recursive: true });
 
-function buildCommand(renderId: string, items: unknown[], modelBlendFile: string): { bin: string; args: string[] } {
+function buildCommand(renderId: string, items: unknown[], modelBlendFile: string, aiEnhance: boolean): { bin: string; args: string[] } {
   const outputPath = resolve(outputDir, `${renderId}.png`);
   const itemsJson = JSON.stringify(items);
+
+  const extraArgs = aiEnhance ? ["--ai-enhance"] : [];
 
   if (useBlender) {
     return {
@@ -35,25 +37,27 @@ function buildCommand(renderId: string, items: unknown[], modelBlendFile: string
         "--render-id", renderId,
         "--items", itemsJson,
         "--blend-file", modelBlendFile,
+        ...extraArgs,
       ],
     };
   }
 
   return {
     bin: process.env.PYTHON_BIN ?? "python3",
-    args: [rendererScript, "--output", outputPath, "--render-id", renderId, "--items", itemsJson, "--blend-file", modelBlendFile],
+    args: [rendererScript, "--output", outputPath, "--render-id", renderId, "--items", itemsJson, "--blend-file", modelBlendFile, ...extraArgs],
   };
 }
 
-function runRenderer(renderId: string, items: unknown[], modelBlendFile: string): Promise<string> {
+function runRenderer(renderId: string, items: unknown[], modelBlendFile: string, aiEnhance: boolean): Promise<string> {
   return new Promise((resolveImage, reject) => {
     const outputPath = resolve(outputDir, `${renderId}.png`);
-    const { bin, args } = buildCommand(renderId, items, modelBlendFile);
+    const { bin, args } = buildCommand(renderId, items, modelBlendFile, aiEnhance);
 
     console.log(JSON.stringify({
       event: "render_started",
       renderId,
       mode: useBlender ? "blender" : "python",
+      aiEnhance,
       command: [bin, ...args].join(" "),
     }));
 
@@ -113,8 +117,9 @@ const worker = new Worker<RenderJobPayload>(
     });
     const items = (renderRecord?.items ?? []) as unknown[];
     const modelBlendFile = renderRecord?.model?.blendFilePath ?? fallbackBlendFile;
+    const aiEnhance = renderRecord?.aiEnhance ?? false;
 
-    const imagePath = await runRenderer(renderId, items, modelBlendFile);
+    const imagePath = await runRenderer(renderId, items, modelBlendFile, aiEnhance);
     const { size: fileSizeBytes } = statSync(imagePath);
 
     await prisma.render.update({
