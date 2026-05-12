@@ -107,7 +107,7 @@ export default function ModelPage({ params }: { params: { id: string } }) {
         throw new Error(body.error ?? `Render request failed with ${res.status}`);
       }
       const created = (await res.json()) as { id: string; status: RenderStatus };
-      setJob({ id: created.id, status: created.status, items: null, imageUrl: null, modelId: id, createdAt: new Date().toISOString() });
+      setJob({ id: created.id, status: created.status, items: null, imageUrl: null, aiEnhance, modelId: id, createdAt: new Date().toISOString() });
       // Register in global render queue immediately
       addOptimistic({ id: created.id, modelId: id, modelName: model?.name ?? "Model" });
       openQueue();
