@@ -171,7 +171,7 @@ app.get("/models/:id/thumbnail", async (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.post("/render", async (req, res) => {
-  const { modelId, items } = req.body ?? {};
+  const { modelId, items, aiEnhance } = req.body ?? {};
 
   if (!modelId || typeof modelId !== "string") {
     return res.status(400).json({ error: "modelId is required" });
@@ -187,6 +187,7 @@ app.post("/render", async (req, res) => {
       status: RenderStatus.pending,
       modelId,
       items: items ?? null,
+      aiEnhance: aiEnhance === true,
     },
   });
 
@@ -194,6 +195,7 @@ app.post("/render", async (req, res) => {
     event: "render_created",
     renderId: render.id,
     modelId,
+    aiEnhance: render.aiEnhance,
   }));
 
   await renderQueue.add("render-room", { renderId: render.id }, {
@@ -201,7 +203,7 @@ app.post("/render", async (req, res) => {
     backoff: { type: "exponential", delay: 2000 },
   });
 
-  return res.status(202).json({ id: render.id, status: render.status });
+  return res.status(202).json({ id: render.id, status: render.status, aiEnhance: render.aiEnhance });
 });
 
 app.get("/render/:id", async (req, res) => {
@@ -214,6 +216,7 @@ app.get("/render/:id", async (req, res) => {
     modelId: render.modelId,
     items: render.items,
     imageUrl: render.imageUrl,
+    aiEnhance: render.aiEnhance,
     createdAt: render.createdAt.toISOString(),
   });
 });

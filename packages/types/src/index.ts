@@ -24,6 +24,7 @@ export interface RenderJob {
   status: RenderStatus;
   items: RenderItem[] | null;
   imageUrl: string | null;
+  aiEnhance: boolean;
   modelId: string;
   createdAt: string;
 }
@@ -31,6 +32,7 @@ export interface RenderJob {
 export interface CreateRenderRequest {
   modelId: string;
   items?: RenderItem[];
+  aiEnhance?: boolean;
 }
 
 export interface RenderQueueItem {

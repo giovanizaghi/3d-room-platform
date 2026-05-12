@@ -75,6 +75,9 @@ services:
       MODELS_DIR: /app/models
       USE_BLENDER: "true"
       BLENDER_BIN: blender
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-gpt-image-1}
+      ENABLE_AI_RENDER_IMPROVEMENT: ${ENABLE_AI_RENDER_IMPROVEMENT:-false}
     depends_on:
       postgres:
         condition: service_healthy
