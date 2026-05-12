@@ -299,7 +299,7 @@ async function seedChairModel() {
   console.log(JSON.stringify({ event: "model_seeded", modelId, name: "Chair", blendFilePath: blendDest, thumbnailPath: thumbDest }));
 }
 
-const port = Number(process.env.API_PORT ?? 4000);
+const port = Number(process.env.PORT ?? process.env.API_PORT ?? 4000);
 app.listen(port, async () => {
   await mkdir(outputDir, { recursive: true });
   await mkdir(modelsDir, { recursive: true });
