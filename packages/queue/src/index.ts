@@ -10,6 +10,10 @@ export const queueConnection = new Redis(
   }
 );
 
+queueConnection.on("error", (err) => {
+  console.error(JSON.stringify({ event: "redis_error", error: String(err) }));
+});
+
 export type RenderJobPayload = {
   renderId: string;
 };
