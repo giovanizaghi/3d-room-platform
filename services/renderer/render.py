@@ -45,31 +45,42 @@ def render_scene(output_path: str, use_eevee: bool = False) -> None:
         scene.cycles.samples = 32
         print("[render.py] Render engine: Cycles (CPU, 32 samples, no denoising)")
 
+    # Force Standard color management — the .blend may reference view transforms
+    # (e.g. "Filmic Log Encoding Base") not present in headless/CI Blender builds.
+    # This prevents silent save failures caused by missing color profiles.
+    try:
+        scene.view_settings.view_transform = "Standard"
+        scene.view_settings.look = "None"
+        scene.view_settings.exposure = 0.0
+        scene.view_settings.gamma = 1.0
+    except Exception as exc:
+        print(f"[render.py] Warning: could not set color management: {exc}")
+
+    # use_file_extension=False prevents Blender from appending a frame number suffix
+    # (e.g. out0001.png) to the filepath. Combined with write_still=True this is the
+    # most reliable way to write an exact output path across Blender versions.
+    scene.render.use_file_extension = False
+    scene.render.filepath = output_path
+
     progress(30, "rendering", "Rendering scene...")
     print(f"[render.py] Rendering scene to {output_path} ...")
     try:
-        bpy.ops.render.render(write_still=False)
+        bpy.ops.render.render(write_still=True)
     except Exception as exc:
         print(f"[render.py] ERROR during bpy.ops.render.render: {exc}", file=sys.stderr)
         raise
 
-    # Explicitly save the render result — more reliable than write_still=True in Blender 4.x.
-    result = bpy.data.images.get("Render Result")
-    if result is None:
-        raise RuntimeError("No 'Render Result' image found after render — render may have failed silently")
-
-    # Ensure output directory exists (Blender may not create it).
-    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-
-    try:
-        # Pass scene= so Blender uses the scene's file format settings (required in 4.x).
-        result.save_render(output_path, scene=bpy.context.scene)
-    except Exception as exc:
-        print(f"[render.py] ERROR during save_render: {exc}", file=sys.stderr)
-        raise
+    if not os.path.exists(output_path):
+        # Fallback: try explicit save via image datablock.
+        print(f"[render.py] write_still did not produce file, trying save_render fallback...")
+        result = bpy.data.images.get("Render Result")
+        if result is None:
+            raise RuntimeError("No 'Render Result' image found after render")
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        result.save_render(output_path, scene=scene)
 
     if not os.path.exists(output_path):
-        raise RuntimeError(f"save_render reported success but file not found: {output_path}")
+        raise RuntimeError(f"Render output not found at expected path: {output_path}")
 
     print(f"[render.py] Render saved: {output_path} ({os.path.getsize(output_path)} bytes)")
     progress(70, "render_complete", "Render saved")
