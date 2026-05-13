@@ -48,19 +48,30 @@ def render_scene(output_path: str, use_eevee: bool = False) -> None:
     progress(30, "rendering", "Rendering scene...")
     print(f"[render.py] Rendering scene to {output_path} ...")
     try:
-        # Use write_still=False and save explicitly — more reliable across Blender versions.
-        # write_still=True can write to a frame-numbered path in Blender 4.x (e.g. out0001.png).
         bpy.ops.render.render(write_still=False)
     except Exception as exc:
         print(f"[render.py] ERROR during bpy.ops.render.render: {exc}", file=sys.stderr)
         raise
 
-    # Explicitly save the render result to the exact output path.
+    # Explicitly save the render result — more reliable than write_still=True in Blender 4.x.
     result = bpy.data.images.get("Render Result")
     if result is None:
         raise RuntimeError("No 'Render Result' image found after render — render may have failed silently")
-    result.save_render(output_path)
-    print(f"[render.py] Saved render result to {output_path}")
+
+    # Ensure output directory exists (Blender may not create it).
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+    try:
+        # Pass scene= so Blender uses the scene's file format settings (required in 4.x).
+        result.save_render(output_path, scene=bpy.context.scene)
+    except Exception as exc:
+        print(f"[render.py] ERROR during save_render: {exc}", file=sys.stderr)
+        raise
+
+    if not os.path.exists(output_path):
+        raise RuntimeError(f"save_render reported success but file not found: {output_path}")
+
+    print(f"[render.py] Render saved: {output_path} ({os.path.getsize(output_path)} bytes)")
     progress(70, "render_complete", "Render saved")
 
 
