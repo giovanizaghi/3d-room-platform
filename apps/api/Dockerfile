@@ -15,6 +15,7 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json ./
 COPY packages/types packages/types
 COPY packages/db packages/db
 COPY packages/queue packages/queue
+COPY packages/storage packages/storage
 
 # Copy API app
 COPY apps/api apps/api

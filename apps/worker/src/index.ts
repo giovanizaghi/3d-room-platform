@@ -1,9 +1,12 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { mkdirSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { resolve, join } from "node:path";
+import { tmpdir } from "node:os";
 import { Worker } from "bullmq";
 import { prisma, RenderStatus } from "@repo/db";
+import { isConfigured as storageConfigured, isStorageKey, upload as storageUpload, download as storageDownload } from "@repo/storage";
 import {
   RENDER_QUEUE_NAME,
   queueConnection,
@@ -202,18 +205,43 @@ const worker = new Worker<RenderJobPayload>(
       include: { model: true },
     });
     const items = (renderRecord?.items ?? []) as unknown[];
-    const modelBlendFile = renderRecord?.model?.blendFilePath ?? fallbackBlendFile;
+    const storedBlendPath = renderRecord?.model?.blendFilePath ?? fallbackBlendFile;
     const aiEnhance = renderRecord?.aiEnhance ?? false;
 
-    const imagePath = await runRenderer(renderId, items, modelBlendFile, aiEnhance);
+    // If blendFilePath is an S3 key (no leading slash), download it to a temp dir first.
+    let modelBlendFile = storedBlendPath;
+    let tempDir: string | null = null;
+    if (isStorageKey(storedBlendPath)) {
+      tempDir = await mkdtemp(join(tmpdir(), `render-${renderId}-`));
+      modelBlendFile = join(tempDir, "model.blend");
+      await storageDownload(storedBlendPath, modelBlendFile);
+      console.log(JSON.stringify({ event: "blend_downloaded", renderId, key: storedBlendPath, dest: modelBlendFile }));
+    }
+
+    let imagePath: string;
+    try {
+      imagePath = await runRenderer(renderId, items, modelBlendFile, aiEnhance);
+    } finally {
+      // Always clean up the temp blend file regardless of render outcome.
+      if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+
     const { size: fileSizeBytes } = statSync(imagePath);
+
+    // Upload rendered PNG to S3 if configured; otherwise keep it on local disk.
+    let imageUrl = `/renders/${renderId}.png`;
+    if (storageConfigured()) {
+      const pngKey = `renders/${renderId}.png`;
+      imageUrl = await storageUpload(pngKey, imagePath, "image/png");
+      console.log(JSON.stringify({ event: "render_uploaded", renderId, key: pngKey, url: imageUrl }));
+    }
 
     await prisma.render.update({
       where: { id: renderId },
       data: {
         status: RenderStatus.done,
         completedAt: new Date(),
-        imageUrl: `/renders/${renderId}.png`,
+        imageUrl,
         progress: 100,
       },
     });

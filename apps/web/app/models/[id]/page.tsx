@@ -334,7 +334,11 @@ export default function ModelPage({ params }: { params: { id: string } }) {
             <div className="mt-6 animate-fade-in">
               <div className="rounded-xl border border-border bg-black/30 p-4 shadow-inner">
                 <img
-                  src={`${apiBase}/render/${currentRender.id}/image`}
+                  src={
+                    currentRender.imageUrl?.startsWith("http")
+                      ? currentRender.imageUrl
+                      : `${apiBase}/render/${currentRender.id}/image`
+                  }
                   alt="Rendered output"
                   className="w-full rounded-lg shadow-lg shadow-accent/10"
                 />

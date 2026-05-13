@@ -11,6 +11,7 @@
   "dependencies": {
     "@repo/db": "workspace:*",
     "@repo/queue": "workspace:*",
+    "@repo/storage": "workspace:*",
     "@repo/types": "workspace:*",
     "cors": "^2.8.5",
     "express": "^4.21.0",

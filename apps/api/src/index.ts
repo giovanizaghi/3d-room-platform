@@ -1,11 +1,12 @@
 import cors from "cors";
 import express from "express";
 import multer from "multer";
-import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { prisma, RenderStatus } from "@repo/db";
 import { createRenderQueue } from "@repo/queue";
+import { isConfigured as storageConfigured, isStorageKey, upload as storageUpload } from "@repo/storage";
 
 const app = express();
 const renderQueue = createRenderQueue();
@@ -92,27 +93,39 @@ app.post("/models", upload.fields([
   const modelDir = resolve(modelsDir, modelId);
   await mkdir(modelDir, { recursive: true });
 
-  const blendDest = resolve(modelDir, "model.blend");
-  await copyFile(blendFile.path, blendDest);
+  // Always write locally first (multer temp → model dir), then optionally upload to S3.
+  const blendLocal = resolve(modelDir, "model.blend");
+  await copyFile(blendFile.path, blendLocal);
 
-  let thumbnailDest: string | null = null;
+  let thumbnailLocal: string | null = null;
   if (thumbnailFile) {
     const ext = extname(thumbnailFile.originalname).toLowerCase();
-    thumbnailDest = resolve(modelDir, `thumbnail${ext}`);
-    await copyFile(thumbnailFile.path, thumbnailDest);
+    thumbnailLocal = resolve(modelDir, `thumbnail${ext}`);
+    await copyFile(thumbnailFile.path, thumbnailLocal);
+  }
+
+  let blendFilePath = blendLocal;
+  let thumbnailPath = thumbnailLocal;
+
+  if (storageConfigured()) {
+    const blendKey = `models/${modelId}/model.blend`;
+    blendFilePath = blendKey; // Store S3 key in DB
+    await storageUpload(blendKey, blendLocal, "application/octet-stream");
+    await rm(blendLocal).catch(() => {});
+
+    if (thumbnailLocal) {
+      const ext = extname(thumbnailLocal);
+      const thumbKey = `models/${modelId}/thumbnail${ext}`;
+      thumbnailPath = await storageUpload(thumbKey, thumbnailLocal, ext === ".png" ? "image/png" : "image/jpeg");
+      await rm(thumbnailLocal).catch(() => {});
+    }
   }
 
   const model = await prisma.model3D.create({
-    data: {
-      id: modelId,
-      name,
-      description,
-      blendFilePath: blendDest,
-      thumbnailPath: thumbnailDest,
-    },
+    data: { id: modelId, name, description, blendFilePath, thumbnailPath },
   });
 
-  console.log(JSON.stringify({ event: "model_created", modelId: model.id, name: model.name }));
+  console.log(JSON.stringify({ event: "model_created", modelId: model.id, name: model.name, storage: storageConfigured() ? "s3" : "local" }));
 
   return res.status(201).json({
     id: model.id,
@@ -156,6 +169,11 @@ app.get("/models/:id/thumbnail", async (req, res) => {
   const model = await prisma.model3D.findUnique({ where: { id: req.params.id } });
   if (!model || !model.thumbnailPath) {
     return res.status(404).json({ error: "thumbnail not found" });
+  }
+
+  // If thumbnail is a full URL (stored in S3), redirect to it.
+  if (model.thumbnailPath.startsWith("http")) {
+    return res.redirect(302, model.thumbnailPath);
   }
 
   try {
@@ -370,6 +388,12 @@ app.get("/renders", async (req, res) => {
 app.get("/render/:id/image", async (req, res) => {
   const renderId = req.params.id;
 
+  // If the render has an S3 imageUrl, redirect there directly.
+  const render = await prisma.render.findUnique({ where: { id: renderId }, select: { imageUrl: true } });
+  if (render?.imageUrl?.startsWith("http")) {
+    return res.redirect(302, render.imageUrl);
+  }
+
   try {
     const imagePath = resolve(outputDir, `${renderId}.png`);
     const { size: fileSizeBytes } = await stat(imagePath);
@@ -402,29 +426,39 @@ async function seedChairModel() {
   const modelDir = resolve(modelsDir, modelId);
   await mkdir(modelDir, { recursive: true });
 
-  const blendDest = resolve(modelDir, "model.blend");
-  await copyFile(chairBlendSrc, blendDest);
+  const blendLocal = resolve(modelDir, "model.blend");
+  await copyFile(chairBlendSrc, blendLocal);
 
-  let thumbDest: string | null = null;
+  let thumbLocal: string | null = null;
   try {
     await stat(chairThumbSrc);
-    thumbDest = resolve(modelDir, "thumbnail.png");
-    await copyFile(chairThumbSrc, thumbDest);
+    thumbLocal = resolve(modelDir, "thumbnail.png");
+    await copyFile(chairThumbSrc, thumbLocal);
   } catch {
     // thumbnail optional
   }
 
+  let blendFilePath = blendLocal;
+  let thumbnailPath = thumbLocal;
+
+  if (storageConfigured()) {
+    const blendKey = `models/${modelId}/model.blend`;
+    blendFilePath = blendKey;
+    await storageUpload(blendKey, blendLocal, "application/octet-stream");
+    await rm(blendLocal).catch(() => {});
+
+    if (thumbLocal) {
+      const thumbKey = `models/${modelId}/thumbnail.png`;
+      thumbnailPath = await storageUpload(thumbKey, thumbLocal, "image/png");
+      await rm(thumbLocal).catch(() => {});
+    }
+  }
+
   await prisma.model3D.create({
-    data: {
-      id: modelId,
-      name: "Chair",
-      description: "Default chair scene",
-      blendFilePath: blendDest,
-      thumbnailPath: thumbDest,
-    },
+    data: { id: modelId, name: "Chair", description: "Default chair scene", blendFilePath, thumbnailPath },
   });
 
-  console.log(JSON.stringify({ event: "model_seeded", modelId, name: "Chair", blendFilePath: blendDest, thumbnailPath: thumbDest }));
+  console.log(JSON.stringify({ event: "model_seeded", modelId, name: "Chair", storage: storageConfigured() ? "s3" : "local" }));
 }
 
 const port = Number(process.env.PORT ?? process.env.API_PORT ?? 4000);
