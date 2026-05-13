@@ -16,7 +16,8 @@ import sys
 
 import bpy  # type: ignore  # provided by Blender's embedded Python
 
-from ai_enhance import enhance_image
+# Ensure this script's directory is on sys.path so ai_enhance.py can be found
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 def progress(pct: int, stage: str, message: str) -> None:
@@ -112,6 +113,7 @@ def main() -> None:
 
     if args.ai_enhance:
         progress(75, "ai_enhance_start", "Starting AI enhancement...")
+        from ai_enhance import enhance_image  # lazy import — only when needed
         enhance_image(args.output)
         progress(95, "ai_enhance_complete", "AI enhancement complete")
 
