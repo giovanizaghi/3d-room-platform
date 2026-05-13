@@ -60,6 +60,11 @@ export default function ModelPage({ params }: { params: { id: string } }) {
   // ID of the render we're tracking on this page (set by submit or by mount recovery).
   const [currentRenderId, setCurrentRenderId] = useState<string | null>(null);
 
+  // Persisted completed render — survives the queue context's linger removal.
+  const [completedRender, setCompletedRender] = useState<RenderQueueItem | null>(null);
+  // Completed renders for this model — loaded on mount, prepended on new completions.
+  const [renderHistory, setRenderHistory] = useState<RenderQueueItem[]>([]);
+
   // Elapsed timer while rendering is in progress.
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -73,6 +78,21 @@ export default function ModelPage({ params }: { params: { id: string } }) {
   const isActive =
     currentRender != null &&
     ACTIVE_RENDER_STATUSES.includes(currentRender.status as RenderStatus);
+
+  // ------------------------------------------------------------------
+  // Capture completed render into local state so it persists after the
+  // global queue context removes the item via its linger timer.
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    if (currentRender?.status === RenderStatus.done) {
+      setCompletedRender(currentRender);
+      setRenderHistory((prev) =>
+        prev.some((r) => r.id === currentRender.id)
+          ? prev
+          : [currentRender, ...prev],
+      );
+    }
+  }, [currentRender]);
 
   // ------------------------------------------------------------------
   // Elapsed timer: runs while the render is active.
@@ -112,15 +132,29 @@ export default function ModelPage({ params }: { params: { id: string } }) {
   useEffect(() => {
     const recover = async () => {
       try {
-        const res = await fetch(
+        // Recover any in-progress render for this model.
+        const activeRes = await fetch(
           `${apiBase}/models/${id}/renders?status=queued,processing&limit=1`,
         );
-        if (!res.ok) return;
-        const data = await res.json() as { renders: RenderQueueItem[]; total: number };
-        if (data.renders.length > 0) {
-          const active = data.renders[0];
-          hydrateRender(active);
-          setCurrentRenderId(active.id);
+        if (activeRes.ok) {
+          const activeData = await activeRes.json() as { renders: RenderQueueItem[]; total: number };
+          if (activeData.renders.length > 0) {
+            const active = activeData.renders[0];
+            hydrateRender(active);
+            setCurrentRenderId(active.id);
+          }
+        }
+
+        // Load render history and auto-select the most recent completed render.
+        const histRes = await fetch(
+          `${apiBase}/models/${id}/renders?status=done&limit=20`,
+        );
+        if (histRes.ok) {
+          const histData = await histRes.json() as { renders: RenderQueueItem[]; total: number };
+          setRenderHistory(histData.renders);
+          if (histData.renders.length > 0) {
+            setCompletedRender(histData.renders[0]);
+          }
         }
       } catch {
         // Best-effort — non-fatal.
@@ -329,15 +363,15 @@ export default function ModelPage({ params }: { params: { id: string } }) {
             </div>
           )}
 
-          {/* Rendered image */}
-          {currentRender?.status === RenderStatus.done && (
+          {/* Rendered image — persisted in local state so it survives queue context linger removal */}
+          {completedRender != null && (
             <div className="mt-6 animate-fade-in">
               <div className="rounded-xl border border-border bg-black/30 p-4 shadow-inner">
                 <img
                   src={
-                    currentRender.imageUrl?.startsWith("http")
-                      ? currentRender.imageUrl
-                      : `${apiBase}/render/${currentRender.id}/image`
+                    completedRender.imageUrl?.startsWith("http")
+                      ? completedRender.imageUrl
+                      : `${apiBase}/render/${completedRender.id}/image`
                   }
                   alt="Rendered output"
                   className="w-full rounded-lg shadow-lg shadow-accent/10"
@@ -345,11 +379,11 @@ export default function ModelPage({ params }: { params: { id: string } }) {
               </div>
               <div className="mt-3 flex items-center justify-between text-xs text-text-muted">
                 <span>{model?.name ?? "Model"} · 800×600</span>
-                {currentRender.startedAt && currentRender.completedAt && (
+                {completedRender.startedAt && completedRender.completedAt && (
                   <span className="font-mono">
                     Rendered in {Math.round(
-                      (new Date(currentRender.completedAt).getTime() -
-                        new Date(currentRender.startedAt).getTime()) / 1_000,
+                      (new Date(completedRender.completedAt).getTime() -
+                        new Date(completedRender.startedAt).getTime()) / 1_000,
                     )}s
                   </span>
                 )}
@@ -404,6 +438,49 @@ export default function ModelPage({ params }: { params: { id: string } }) {
             </div>
           )}
         </div>
+
+        {/* Render history */}
+        {renderHistory.length >= 2 && (
+          <div className="rounded-2xl border border-border bg-bg-card/80 backdrop-blur-sm p-6 shadow-2xl">
+            <h2 className="mb-4 text-sm font-medium text-text-secondary">Render History</h2>
+            <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
+              {renderHistory.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => setCompletedRender(r)}
+                  className={`group relative rounded-xl overflow-hidden border transition-all duration-150 hover:scale-[1.03] hover:shadow-lg ${
+                    completedRender?.id === r.id
+                      ? "border-accent shadow-lg shadow-accent/20 ring-1 ring-accent/50"
+                      : "border-border hover:border-accent/40"
+                  }`}
+                >
+                  <img
+                    src={
+                      r.imageUrl?.startsWith("http")
+                        ? r.imageUrl
+                        : `${apiBase}/render/${r.id}/image`
+                    }
+                    alt={`Render ${r.id.slice(0, 8)}`}
+                    className="aspect-[4/3] w-full object-cover bg-black/30"
+                  />
+                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5">
+                    <p className="font-mono text-[10px] text-white/70 truncate">
+                      {r.completedAt
+                        ? new Date(r.completedAt).toLocaleDateString(undefined, {
+                            month: "short",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })
+                        : r.id.slice(0, 8)}
+                    </p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </main>
   );
