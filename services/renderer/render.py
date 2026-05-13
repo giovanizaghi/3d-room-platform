@@ -33,21 +33,25 @@ def render_scene(output_path: str, use_eevee: bool = False) -> None:
     scene.render.resolution_percentage = 100
 
     if use_eevee:
-        # EEVEE is significantly faster than Cycles — ideal when AI will post-process the image.
-        scene.render.engine = "BLENDER_EEVEE_NEXT"
-        print("[render.py] Render engine: EEVEE (fast mode for AI enhancement)")
+        # EEVEE_NEXT is the engine name in Blender 4.x (renamed from BLENDER_EEVEE in 3.x).
+        engine = "BLENDER_EEVEE_NEXT" if bpy.app.version >= (4, 0, 0) else "BLENDER_EEVEE"
+        scene.render.engine = engine
+        print(f"[render.py] Render engine: {engine} (fast mode for AI enhancement)")
     else:
-        # Disable denoising — OpenImageDenoiser is not available in the apt-packaged
-        # Blender build. Without this, render.render() raises an error and aborts.
-        if hasattr(scene, "cycles"):
-            scene.cycles.use_denoising = False
-            # 32 samples is sufficient for a visible result on CPU without long render times.
-            scene.cycles.samples = 32
-        print("[render.py] Render engine: Cycles")
+        # Force Cycles with CPU — headless containers have no GPU.
+        scene.render.engine = "CYCLES"
+        scene.cycles.device = "CPU"
+        scene.cycles.use_denoising = False
+        scene.cycles.samples = 32
+        print("[render.py] Render engine: Cycles (CPU, 32 samples, no denoising)")
 
     progress(30, "rendering", "Rendering scene...")
     print(f"[render.py] Rendering scene to {output_path} ...")
-    bpy.ops.render.render(write_still=True)
+    try:
+        bpy.ops.render.render(write_still=True)
+    except Exception as exc:
+        print(f"[render.py] ERROR during bpy.ops.render.render: {exc}", file=sys.stderr)
+        raise
     progress(70, "render_complete", "Render saved")
     print(f"[render.py] Render complete: {output_path}")
 

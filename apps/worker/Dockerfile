@@ -1,21 +1,28 @@
 FROM node:20-slim
 
-# Enable non-free repo (required for blender on Debian Bookworm) and install dependencies.
-# Blender headless requires libglu1-mesa + X11/render libs even in -b (background) mode.
-RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list \
-    && apt-get update && apt-get install -y \
+# System libraries required by Blender headless (no blender from apt — Bookworm only has 3.4,
+# which lacks BLENDER_EEVEE_NEXT and has .blend compatibility issues with 4.x files).
+RUN apt-get update && apt-get install -y \
     python3 \
     openssl \
-    blender \
+    curl \
+    xz-utils \
     libglu1-mesa \
     libxi6 \
     libxrender1 \
     libxxf86vm1 \
-    && rm -rf /var/lib/apt/lists/* \
+    libxfixes3 \
+    libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download Blender 4.2 LTS from the official Blender Foundation mirror.
+ARG BLENDER_VERSION=4.2.0
+RUN curl -fSL "https://download.blender.org/release/Blender4.2/blender-${BLENDER_VERSION}-linux-x64.tar.xz" \
+    | tar -xJ -C /opt \
+    && ln -s "/opt/blender-${BLENDER_VERSION}-linux-x64/blender" /usr/local/bin/blender \
     && blender --version
 
-# Install Python deps (openai) into Blender's embedded Python interpreter.
-# 'blender -b --python-expr' runs code inside Blender's own Python, not system Python.
+# Install Python deps (openai) into Blender's own embedded Python (not system Python).
 COPY services/renderer/requirements.txt /tmp/renderer-requirements.txt
 RUN blender -b --python-expr \
     "import subprocess, sys; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', '/tmp/renderer-requirements.txt'])"

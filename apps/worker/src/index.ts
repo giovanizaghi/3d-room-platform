@@ -75,6 +75,12 @@ function runRenderer(renderId: string, items: unknown[], modelBlendFile: string,
 
     const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
 
+    // Accumulate stderr lines so we can surface the real error on failure.
+    // "Blender quit" is a stdout line that fires after stderr — without this buffer
+    // it overwrites the actual traceback in lastLogLine.
+    const stderrBuffer: string[] = [];
+    const MAX_STDERR_LINES = 15;
+
     // Fallback heartbeat: keeps lastHeartbeatAt fresh even between PROGRESS lines.
     const heartbeatTimer = setInterval(async () => {
       try {
@@ -110,11 +116,14 @@ function runRenderer(renderId: string, items: unknown[], modelBlendFile: string,
           // Malformed PROGRESS line — treat as plain log.
         }
       } else if (line.trim()) {
-        // Store last meaningful non-progress stdout line for debugging.
-        prisma.render.update({
-          where: { id: renderId },
-          data: { lastLogLine: line.slice(0, 500) },
-        }).catch(() => {});
+        // Only update lastLogLine from stdout if no stderr has been seen yet —
+        // prevents "Blender quit" (a stdout line) from overwriting a real traceback.
+        if (stderrBuffer.length === 0) {
+          prisma.render.update({
+            where: { id: renderId },
+            data: { lastLogLine: line.slice(0, 500) },
+          }).catch(() => {});
+        }
       }
     });
 
@@ -123,6 +132,8 @@ function runRenderer(renderId: string, items: unknown[], modelBlendFile: string,
     rlErr.on("line", (line) => {
       if (line.trim()) {
         console.error(`[renderer:${renderId}:stderr] ${line}`);
+        stderrBuffer.push(line);
+        if (stderrBuffer.length > MAX_STDERR_LINES) stderrBuffer.shift();
         prisma.render.update({
           where: { id: renderId },
           data: { lastLogLine: `[stderr] ${line}`.slice(0, 500) },
@@ -139,8 +150,12 @@ function runRenderer(renderId: string, items: unknown[], modelBlendFile: string,
         console.log(JSON.stringify({ event: "render_completed", renderId, outputPath }));
         resolveImage(outputPath);
       } else {
-        console.log(JSON.stringify({ event: "render_failed", renderId, exitCode: code, command: bin }));
-        reject(new Error(`Renderer exited with code ${code}`));
+        // Build a rich error message from accumulated stderr so the UI shows the real cause.
+        const stderrSummary = stderrBuffer.length > 0
+          ? stderrBuffer.join("\n").slice(-1000)
+          : `Renderer exited with code ${code}`;
+        console.log(JSON.stringify({ event: "render_failed", renderId, exitCode: code, command: bin, stderr: stderrSummary }));
+        reject(new Error(stderrSummary));
       }
     });
 
