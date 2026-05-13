@@ -8,9 +8,11 @@ datasource db {
 }
 
 enum RenderStatus {
-  pending
+  queued
   processing
   done
+  failed
+  stalled
 }
 
 model Model3D {
@@ -26,12 +28,38 @@ model Model3D {
 
 model Render {
   id        String       @id @default(uuid())
-  status    RenderStatus @default(pending)
+  status    RenderStatus @default(queued)
   items     Json?
   imageUrl  String?
   aiEnhance Boolean      @default(false)
-  createdAt DateTime     @default(now())
 
+  // Timestamps
+  createdAt       DateTime  @default(now())
+  queuedAt        DateTime  @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  lastHeartbeatAt DateTime?
+
+  // Progress & Logs
+  progress      Int     @default(0)
+  progressLabel String?
+  lastLogLine   String?
+
+  // Failure
+  errorMessage String?
+  attempts     Int     @default(0)
+
+  // Retry lineage
+  retriedFromId String?
+  retriedFrom   Render?  @relation("RenderRetry", fields: [retriedFromId], references: [id])
+  retriedBy     Render[] @relation("RenderRetry")
+
+  // Relations
   modelId String
   model   Model3D @relation(fields: [modelId], references: [id])
+
+  @@index([modelId, status])
+  @@index([status, lastHeartbeatAt])
+  @@index([createdAt])
+  @@index([retriedFromId])
 }

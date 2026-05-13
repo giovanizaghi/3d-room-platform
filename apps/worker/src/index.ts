@@ -1,14 +1,14 @@
 import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import { mkdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { Worker } from "bullmq";
-import { prisma } from "@repo/db";
+import { prisma, RenderStatus } from "@repo/db";
 import {
   RENDER_QUEUE_NAME,
   queueConnection,
   type RenderJobPayload
 } from "@repo/queue";
-import { RenderStatus } from "@repo/types";
 
 const rootDir = resolve(process.cwd(), "../..");
 const outputDir = process.env.OUTPUT_DIR ?? resolve(rootDir, "services/renderer/output");
@@ -18,12 +18,18 @@ const fallbackBlendFile = process.env.BLEND_FILE ?? resolve(rendererDir, "chair.
 const blenderBin = process.env.BLENDER_BIN ?? "blender";
 const useBlender = (process.env.USE_BLENDER ?? "true") === "true";
 
+/** How long without a heartbeat before the stall monitor acts (ms). */
+const STALL_THRESHOLD_MS = 90_000;
+/** How often the stall monitor sweeps for stalled renders (ms). */
+const STALL_MONITOR_INTERVAL_MS = 30_000;
+/** How often the fallback heartbeat timer updates the DB while child is alive (ms). */
+const HEARTBEAT_INTERVAL_MS = 15_000;
+
 mkdirSync(outputDir, { recursive: true });
 
 function buildCommand(renderId: string, items: unknown[], modelBlendFile: string, aiEnhance: boolean): { bin: string; args: string[] } {
   const outputPath = resolve(outputDir, `${renderId}.png`);
   const itemsJson = JSON.stringify(items);
-
   const extraArgs = aiEnhance ? ["--ai-enhance"] : [];
 
   if (useBlender) {
@@ -48,6 +54,12 @@ function buildCommand(renderId: string, items: unknown[], modelBlendFile: string
   };
 }
 
+interface ProgressPayload {
+  progress: number;
+  stage: string;
+  message: string;
+}
+
 function runRenderer(renderId: string, items: unknown[], modelBlendFile: string, aiEnhance: boolean): Promise<string> {
   return new Promise((resolveImage, reject) => {
     const outputPath = resolve(outputDir, `${renderId}.png`);
@@ -61,34 +73,82 @@ function runRenderer(renderId: string, items: unknown[], modelBlendFile: string,
       command: [bin, ...args].join(" "),
     }));
 
-    const child = spawn(bin, args, { stdio: "inherit" });
+    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+
+    // Fallback heartbeat: keeps lastHeartbeatAt fresh even between PROGRESS lines.
+    const heartbeatTimer = setInterval(async () => {
+      try {
+        await prisma.render.update({
+          where: { id: renderId },
+          data: { lastHeartbeatAt: new Date() },
+        });
+      } catch {
+        // Non-fatal — stall monitor is the authoritative cleanup path.
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+
+    // Parse stdout line-by-line; extract PROGRESS: lines for structured updates.
+    const rl = createInterface({ input: child.stdout! });
+    rl.on("line", (line) => {
+      // Echo all stdout to worker logs for observability.
+      console.log(`[renderer:${renderId}] ${line}`);
+
+      if (line.startsWith("PROGRESS:")) {
+        try {
+          const payload = JSON.parse(line.slice("PROGRESS:".length)) as ProgressPayload;
+          // Fire-and-forget: heartbeat + progress update from structured line.
+          prisma.render.update({
+            where: { id: renderId },
+            data: {
+              lastHeartbeatAt: new Date(),
+              progress: payload.progress,
+              progressLabel: payload.message,
+              lastLogLine: payload.message,
+            },
+          }).catch(() => {});
+        } catch {
+          // Malformed PROGRESS line — treat as plain log.
+        }
+      } else if (line.trim()) {
+        // Store last meaningful non-progress stdout line for debugging.
+        prisma.render.update({
+          where: { id: renderId },
+          data: { lastLogLine: line.slice(0, 500) },
+        }).catch(() => {});
+      }
+    });
+
+    // Echo stderr to worker logs too.
+    const rlErr = createInterface({ input: child.stderr! });
+    rlErr.on("line", (line) => {
+      if (line.trim()) {
+        console.error(`[renderer:${renderId}:stderr] ${line}`);
+        prisma.render.update({
+          where: { id: renderId },
+          data: { lastLogLine: `[stderr] ${line}`.slice(0, 500) },
+        }).catch(() => {});
+      }
+    });
 
     child.on("exit", (code) => {
+      clearInterval(heartbeatTimer);
+      rl.close();
+      rlErr.close();
+
       if (code === 0) {
-        console.log(JSON.stringify({
-          event: "render_completed",
-          renderId,
-          outputPath,
-        }));
+        console.log(JSON.stringify({ event: "render_completed", renderId, outputPath }));
         resolveImage(outputPath);
       } else {
-        console.log(JSON.stringify({
-          event: "render_failed",
-          renderId,
-          exitCode: code,
-          command: bin,
-        }));
+        console.log(JSON.stringify({ event: "render_failed", renderId, exitCode: code, command: bin }));
         reject(new Error(`Renderer exited with code ${code}`));
       }
     });
 
     child.on("error", (err) => {
-      console.log(JSON.stringify({
-        event: "render_spawn_error",
-        renderId,
-        error: err.message,
-        command: bin,
-      }));
+      clearInterval(heartbeatTimer);
+      rl.close();
+      rlErr.close();
+      console.log(JSON.stringify({ event: "render_spawn_error", renderId, error: err.message, command: bin }));
       reject(err);
     });
   });
@@ -99,16 +159,18 @@ const worker = new Worker<RenderJobPayload>(
   RENDER_QUEUE_NAME,
   async (job) => {
     const { renderId } = job.data;
+    const now = new Date();
 
-    console.log(JSON.stringify({
-      event: "job_started",
-      renderId,
-      attempt: job.attemptsMade + 1
-    }));
+    console.log(JSON.stringify({ event: "job_started", renderId, attempt: job.attemptsMade + 1 }));
 
     await prisma.render.update({
       where: { id: renderId },
-      data: { status: RenderStatus.processing }
+      data: {
+        status: RenderStatus.processing,
+        startedAt: now,
+        lastHeartbeatAt: now,
+        attempts: { increment: 1 },
+      },
     });
 
     const renderRecord = await prisma.render.findUnique({
@@ -126,41 +188,84 @@ const worker = new Worker<RenderJobPayload>(
       where: { id: renderId },
       data: {
         status: RenderStatus.done,
-        imageUrl: `/renders/${renderId}.png`
-      }
+        completedAt: new Date(),
+        imageUrl: `/renders/${renderId}.png`,
+        progress: 100,
+      },
     });
 
-    console.log(JSON.stringify({
-      event: "render_file_created",
-      renderId,
-      outputPath: imagePath,
-      fileSizeBytes
-    }));
+    console.log(JSON.stringify({ event: "render_file_created", renderId, outputPath: imagePath, fileSizeBytes }));
   },
   {
     connection: queueConnection,
-    concurrency: 2
+    concurrency: 2,
+    // Increase lock duration well beyond the longest expected render so BullMQ doesn't
+    // falsely stall the job while it is legitimately running. Lock auto-renews every
+    // lockDuration/2 = 150s, which is fine since the renderer runs as a child process
+    // and the Node event loop stays responsive.
+    lockDuration: 300_000,
   }
 );
 
 worker.on("failed", async (job, err) => {
   if (!job) return;
 
+  const isLastAttempt = job.attemptsMade >= (job.opts.attempts ?? 1) - 1;
+
   console.log(JSON.stringify({
     event: "job_failed",
     renderId: job.data.renderId,
     jobId: job.id,
     error: err.message,
-    attempt: job.attemptsMade + 1
+    attempt: job.attemptsMade + 1,
+    isLastAttempt,
   }));
 
-  if (job.attemptsMade >= 2) {
+  if (isLastAttempt) {
     await prisma.render.update({
       where: { id: job.data.renderId },
-      data: { status: RenderStatus.pending }
+      data: {
+        status: RenderStatus.failed,
+        completedAt: new Date(),
+        errorMessage: err.message.slice(0, 1000),
+      },
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Stall monitor: detects renders stuck in `processing` with no heartbeat.
+// Uses an atomic WHERE clause so running on multiple worker instances is safe
+// (once a render is stalled it no longer matches and won't be updated again).
+// ---------------------------------------------------------------------------
+
+async function sweepStalledRenders(): Promise<void> {
+  const threshold = new Date(Date.now() - STALL_THRESHOLD_MS);
+  const result = await prisma.render.updateMany({
+    where: {
+      status: RenderStatus.processing,
+      OR: [
+        { lastHeartbeatAt: { lt: threshold } },
+        { lastHeartbeatAt: null },
+      ],
+    },
+    data: {
+      status: RenderStatus.stalled,
+      completedAt: new Date(),
+      errorMessage: "Render stalled: no heartbeat received for 90 seconds",
+    },
+  });
+
+  if (result.count > 0) {
+    console.log(JSON.stringify({ event: "stall_sweep", stalledCount: result.count }));
+  }
+}
+
+// Startup sweep: catch renders orphaned by a previous worker crash.
+sweepStalledRenders().catch(console.error);
+
+// Periodic sweep every 30s.
+setInterval(() => sweepStalledRenders().catch(console.error), STALL_MONITOR_INTERVAL_MS);
 
 console.log(JSON.stringify({
   event: "worker_started",
@@ -168,5 +273,7 @@ console.log(JSON.stringify({
   blenderBin: useBlender ? blenderBin : null,
   fallbackBlendFile: useBlender ? fallbackBlendFile : null,
   rendererScript,
-  outputDir
+  outputDir,
+  stallThresholdMs: STALL_THRESHOLD_MS,
 }));
+

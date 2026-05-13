@@ -8,17 +8,25 @@ import {
   useRef,
   useState,
 } from "react";
-import { RenderStatus, type RenderQueueItem } from "@repo/types";
+import {
+  RenderStatus,
+  ACTIVE_RENDER_STATUSES,
+  TERMINAL_RENDER_STATUSES,
+  type RenderQueueItem,
+} from "@repo/types";
 
-const POLL_INTERVAL_MS = 3000;
-const DONE_LINGER_MS = 5000;
+// Polling intervals (ms)
+const POLL_PROCESSING_MS = 3_000;  // at least one render is processing
+const POLL_QUEUED_MS     = 5_000;  // only queued renders (not yet running)
+const POLL_HIDDEN_MS     = 15_000; // browser tab is in background
+const DONE_LINGER_MS     = 5_000;  // how long completed items stay visible
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-interface QueueEntry extends RenderQueueItem {
+export interface QueueEntry extends RenderQueueItem {
   /** Drives the fade-out-up CSS animation before removal */
   exiting?: boolean;
 }
@@ -30,7 +38,11 @@ interface RenderQueueContextValue {
   toggle: () => void;
   open: () => void;
   close: () => void;
-  /** Call immediately after POST /render returns to show the job in the panel */
+  /** Returns the most recent active (queued/processing) render for a given model, if any. */
+  getActiveRender: (modelId: string) => QueueEntry | undefined;
+  /** Merges a known render into context state — used on page mount to hydrate from DB. */
+  hydrateRender: (render: RenderQueueItem) => void;
+  /** Call immediately after POST /render to show the job in the panel before the first poll. */
   addOptimistic: (partial: { id: string; modelId: string; modelName: string }) => void;
 }
 
@@ -45,6 +57,8 @@ const RenderQueueContext = createContext<RenderQueueContextValue>({
   toggle: () => {},
   open: () => {},
   close: () => {},
+  getActiveRender: () => undefined,
+  hydrateRender: () => {},
   addOptimistic: () => {},
 });
 
@@ -60,19 +74,42 @@ export function RenderQueueProvider({ children }: { children: React.ReactNode })
   const [isOpen, setIsOpen] = useState(false);
   const [items, setItems] = useState<QueueEntry[]>([]);
 
-  // Track which IDs were already completed so we can detect transitions
-  const completedRef = useRef<Set<string>>(new Set());
-  // Timer IDs for each item's linger delay
+  // Track already-terminal IDs to detect done/failed/stalled transitions.
+  const terminalRef = useRef<Set<string>>(new Set());
+  // Linger timers: terminal items stay visible for DONE_LINGER_MS then animate out.
   const lingerTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Derived
+  const pollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollDelayRef = useRef<number>(POLL_PROCESSING_MS);
+
+  // Derived counts
   const activeCount = items.filter(
-    (i) => !i.exiting && (i.status === RenderStatus.pending || i.status === RenderStatus.processing)
+    (i) =>
+      !i.exiting &&
+      ACTIVE_RENDER_STATUSES.includes(i.status as RenderStatus),
   ).length;
 
+  const hasProcessing = items.some(
+    (i) => !i.exiting && i.status === RenderStatus.processing,
+  );
+
   // ------------------------------------------------------------------
-  // Fetch + merge latest renders from API
+  // Schedule removal of a terminal item after a linger delay.
+  // ------------------------------------------------------------------
+  const scheduleLinger = useCallback((id: string) => {
+    if (lingerTimers.current.has(id)) return;
+    const timer = setTimeout(() => {
+      setItems((cur) => cur.map((i) => (i.id === id ? { ...i, exiting: true } : i)));
+      setTimeout(() => {
+        setItems((cur) => cur.filter((i) => i.id !== id));
+        lingerTimers.current.delete(id);
+      }, 500);
+    }, DONE_LINGER_MS);
+    lingerTimers.current.set(id, timer);
+  }, []);
+
+  // ------------------------------------------------------------------
+  // Fetch + merge latest renders from API.
   // ------------------------------------------------------------------
   const fetchRenders = useCallback(async () => {
     try {
@@ -84,113 +121,158 @@ export function RenderQueueProvider({ children }: { children: React.ReactNode })
         const prevById = new Map(prev.map((i) => [i.id, i]));
         const freshById = new Map(fresh.map((i) => [i.id, i]));
 
-        // Detect newly completed items and schedule their removal
+        // Detect transitions to terminal status.
         fresh.forEach((f) => {
           const wasActive =
-            !completedRef.current.has(f.id) &&
-            (prevById.get(f.id)?.status === RenderStatus.pending ||
-              prevById.get(f.id)?.status === RenderStatus.processing);
+            !terminalRef.current.has(f.id) &&
+            ACTIVE_RENDER_STATUSES.includes(
+              prevById.get(f.id)?.status as RenderStatus,
+            );
 
-          if (f.status === RenderStatus.done) {
-            if (wasActive && !lingerTimers.current.has(f.id)) {
-              // Give DONE_LINGER_MS, then trigger exit animation, then remove
-              const timer = setTimeout(() => {
-                setItems((cur) =>
-                  cur.map((i) => (i.id === f.id ? { ...i, exiting: true } : i))
-                );
-                // Remove from state after animation completes (~450ms)
-                setTimeout(() => {
-                  setItems((cur) => cur.filter((i) => i.id !== f.id));
-                  lingerTimers.current.delete(f.id);
-                }, 500);
-              }, DONE_LINGER_MS);
-              lingerTimers.current.set(f.id, timer);
-            }
-            completedRef.current.add(f.id);
+          if (TERMINAL_RENDER_STATUSES.includes(f.status as RenderStatus)) {
+            if (wasActive) scheduleLinger(f.id);
+            terminalRef.current.add(f.id);
           }
         });
 
-        // Merge: preserve exiting state from prev, update status/imageUrl from fresh
+        // Merge: keep exiting state, update everything else from fresh.
         const merged: QueueEntry[] = prev
-          .filter((p) => freshById.has(p.id) || p.exiting) // keep exiting items even if dropped from API
+          .filter((p) => freshById.has(p.id) || p.exiting)
           .map((p) => {
             const f = freshById.get(p.id);
             if (!f) return p;
             return { ...f, exiting: p.exiting };
           });
 
-        // Add items that are new from the API (not in prev)
+        // Add brand-new items not yet in local state.
         fresh.forEach((f) => {
-          if (!prevById.has(f.id)) {
-            merged.push({ ...f, exiting: false });
-          }
+          if (!prevById.has(f.id)) merged.push({ ...f, exiting: false });
         });
 
-        // Sort by createdAt desc
         merged.sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
         );
         return merged;
       });
     } catch {
-      // silently ignore network errors
+      // Silently ignore network errors — next poll will retry.
     }
-  }, []);
+  }, [scheduleLinger]);
 
   // ------------------------------------------------------------------
-  // Polling: run when panel is open OR when there are active renders
+  // Adaptive polling: adjust interval based on render state + tab visibility.
   // ------------------------------------------------------------------
-  useEffect(() => {
-    const shouldPoll = isOpen || activeCount > 0;
+  const getTargetInterval = useCallback((): number => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      return POLL_HIDDEN_MS;
+    }
+    if (hasProcessing) return POLL_PROCESSING_MS;
+    if (activeCount > 0) return POLL_QUEUED_MS;
+    return 0; // nothing active — stop polling
+  }, [hasProcessing, activeCount]);
 
-    if (shouldPoll && !pollRef.current) {
-      fetchRenders(); // immediate fetch on open
-      pollRef.current = setInterval(fetchRenders, POLL_INTERVAL_MS);
-    } else if (!shouldPoll && pollRef.current) {
-      clearInterval(pollRef.current);
+  const restartPoll = useCallback(
+    (intervalMs: number) => {
+      if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = null;
-    }
+      if (intervalMs > 0) {
+        pollDelayRef.current = intervalMs;
+        pollRef.current = setInterval(fetchRenders, intervalMs);
+      }
+    },
+    [fetchRenders],
+  );
 
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
+  // Re-evaluate poll interval when active state changes.
+  useEffect(() => {
+    const target = isOpen || activeCount > 0 ? getTargetInterval() : 0;
+    if (target !== pollDelayRef.current || (target === 0 && pollRef.current)) {
+      if (target === 0) {
+        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      } else {
+        restartPoll(target);
+      }
+    }
+  }, [isOpen, activeCount, hasProcessing, getTargetInterval, restartPoll]);
+
+  // Adjust polling when tab visibility changes.
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (activeCount > 0 || isOpen) {
+        restartPoll(getTargetInterval());
+        if (document.visibilityState === "visible") fetchRenders();
       }
     };
-  }, [isOpen, activeCount, fetchRenders]);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+  }, [isOpen, activeCount, getTargetInterval, restartPoll, fetchRenders]);
 
-  // Initial fetch on mount so the badge count is populated immediately
+  // Initial fetch on mount so the badge count is populated immediately.
   useEffect(() => {
     fetchRenders();
   }, [fetchRenders]);
 
-  // Cleanup linger timers on unmount
+  // Cleanup timers on unmount.
   useEffect(() => {
     return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
       lingerTimers.current.forEach((t) => clearTimeout(t));
     };
   }, []);
 
   // ------------------------------------------------------------------
-  // Optimistic insert: add a render immediately after triggering it
+  // Public API
   // ------------------------------------------------------------------
+
+  const getActiveRender = useCallback(
+    (modelId: string): QueueEntry | undefined =>
+      items.find(
+        (i) =>
+          i.modelId === modelId &&
+          !i.exiting &&
+          ACTIVE_RENDER_STATUSES.includes(i.status as RenderStatus),
+      ),
+    [items],
+  );
+
+  const hydrateRender = useCallback((render: RenderQueueItem) => {
+    setItems((prev) => {
+      if (prev.some((i) => i.id === render.id)) {
+        // Update existing entry (e.g. stale data from a prior optimistic insert).
+        return prev.map((i) => (i.id === render.id ? { ...render, exiting: i.exiting } : i));
+      }
+      return [{ ...render, exiting: false }, ...prev];
+    });
+  }, []);
+
   const addOptimistic = useCallback(
     (partial: { id: string; modelId: string; modelName: string }) => {
       setItems((prev) => {
         if (prev.some((i) => i.id === partial.id)) return prev;
         const entry: QueueEntry = {
           id: partial.id,
-          status: RenderStatus.pending,
+          status: RenderStatus.queued,
           modelId: partial.modelId,
           modelName: partial.modelName,
           imageUrl: null,
           createdAt: new Date().toISOString(),
+          queuedAt: new Date().toISOString(),
+          startedAt: null,
+          completedAt: null,
+          lastHeartbeatAt: null,
+          progress: 0,
+          progressLabel: null,
+          lastLogLine: null,
+          errorMessage: null,
+          attempts: 0,
+          retriedFromId: null,
           exiting: false,
         };
         return [entry, ...prev];
       });
     },
-    []
+    [],
   );
 
   const toggle = useCallback(() => setIsOpen((v) => !v), []);
@@ -199,9 +281,20 @@ export function RenderQueueProvider({ children }: { children: React.ReactNode })
 
   return (
     <RenderQueueContext.Provider
-      value={{ isOpen, items, activeCount, toggle, open, close, addOptimistic }}
+      value={{
+        isOpen,
+        items,
+        activeCount,
+        toggle,
+        open,
+        close,
+        getActiveRender,
+        hydrateRender,
+        addOptimistic,
+      }}
     >
       {children}
     </RenderQueueContext.Provider>
   );
 }
+

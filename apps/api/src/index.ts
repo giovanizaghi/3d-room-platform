@@ -4,9 +4,8 @@ import multer from "multer";
 import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { prisma } from "@repo/db";
+import { prisma, RenderStatus } from "@repo/db";
 import { createRenderQueue } from "@repo/queue";
-import { RenderStatus } from "@repo/types";
 
 const app = express();
 const renderQueue = createRenderQueue();
@@ -170,6 +169,52 @@ app.get("/models/:id/thumbnail", async (req, res) => {
 // Renders
 // ---------------------------------------------------------------------------
 
+type PrismaRenderWithModel = {
+  id: string;
+  status: string;
+  modelId: string;
+  items: unknown;
+  imageUrl: string | null;
+  aiEnhance: boolean;
+  createdAt: Date;
+  queuedAt: Date;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  lastHeartbeatAt: Date | null;
+  progress: number;
+  progressLabel: string | null;
+  lastLogLine: string | null;
+  errorMessage: string | null;
+  attempts: number;
+  retriedFromId: string | null;
+  model?: { name: string };
+};
+
+function serializeRender(r: PrismaRenderWithModel) {
+  return {
+    id: r.id,
+    status: r.status,
+    modelId: r.modelId,
+    modelName: r.model?.name ?? null,
+    items: r.items,
+    imageUrl: r.imageUrl,
+    aiEnhance: r.aiEnhance,
+    createdAt: r.createdAt.toISOString(),
+    queuedAt: r.queuedAt.toISOString(),
+    startedAt: r.startedAt?.toISOString() ?? null,
+    completedAt: r.completedAt?.toISOString() ?? null,
+    lastHeartbeatAt: r.lastHeartbeatAt?.toISOString() ?? null,
+    progress: r.progress,
+    progressLabel: r.progressLabel,
+    lastLogLine: r.lastLogLine,
+    errorMessage: r.errorMessage,
+    attempts: r.attempts,
+    retriedFromId: r.retriedFromId,
+  };
+}
+
+const ACTIVE_STATUSES: RenderStatus[] = [RenderStatus.queued, RenderStatus.processing];
+
 app.post("/render", async (req, res) => {
   const { modelId, items, aiEnhance } = req.body ?? {};
 
@@ -182,21 +227,32 @@ app.post("/render", async (req, res) => {
     return res.status(404).json({ error: "model not found" });
   }
 
+  // Prevent duplicate: one active render per model at a time.
+  const existing = await prisma.render.findFirst({
+    where: { modelId, status: { in: ACTIVE_STATUSES } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, status: true },
+  });
+  if (existing) {
+    return res.status(409).json({
+      error: "ACTIVE_RENDER_EXISTS",
+      existingRenderId: existing.id,
+      status: existing.status,
+    });
+  }
+
+  const now = new Date();
   const render = await prisma.render.create({
     data: {
-      status: RenderStatus.pending,
+      status: RenderStatus.queued,
       modelId,
       items: items ?? null,
       aiEnhance: aiEnhance === true,
+      queuedAt: now,
     },
   });
 
-  console.log(JSON.stringify({
-    event: "render_created",
-    renderId: render.id,
-    modelId,
-    aiEnhance: render.aiEnhance,
-  }));
+  console.log(JSON.stringify({ event: "render_created", renderId: render.id, modelId, aiEnhance: render.aiEnhance }));
 
   await renderQueue.add("render-room", { renderId: render.id }, {
     attempts: 3,
@@ -206,37 +262,105 @@ app.post("/render", async (req, res) => {
   return res.status(202).json({ id: render.id, status: render.status, aiEnhance: render.aiEnhance });
 });
 
-app.get("/render/:id", async (req, res) => {
-  const render = await prisma.render.findUnique({ where: { id: req.params.id } });
-  if (!render) return res.status(404).json({ error: "render not found" });
+// GET /models/:id/renders — filterable render history for a model.
+app.get("/models/:id/renders", async (req, res) => {
+  const modelId = req.params.id;
+  const model = await prisma.model3D.findUnique({ where: { id: modelId }, select: { id: true } });
+  if (!model) return res.status(404).json({ error: "model not found" });
 
-  return res.json({
-    id: render.id,
-    status: render.status,
-    modelId: render.modelId,
-    items: render.items,
-    imageUrl: render.imageUrl,
-    aiEnhance: render.aiEnhance,
-    createdAt: render.createdAt.toISOString(),
-  });
+  const rawStatus = typeof req.query.status === "string" ? req.query.status : null;
+  const statusFilter = rawStatus
+    ? rawStatus.split(",").filter((s) => Object.values(RenderStatus).includes(s as RenderStatus)) as RenderStatus[]
+    : null;
+
+  const limit = Math.min(Number(req.query.limit ?? 10), 100);
+  const offset = Number(req.query.offset ?? 0);
+
+  const [renders, total] = await prisma.$transaction([
+    prisma.render.findMany({
+      where: { modelId, ...(statusFilter ? { status: { in: statusFilter } } : {}) },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
+      include: { model: { select: { name: true } } },
+    }),
+    prisma.render.count({
+      where: { modelId, ...(statusFilter ? { status: { in: statusFilter } } : {}) },
+    }),
+  ]);
+
+  return res.json({ renders: renders.map(serializeRender), total });
 });
 
-app.get("/renders", async (_req, res) => {
+// POST /render/:id/retry — creates a new render from a failed/stalled one.
+app.post("/render/:id/retry", async (req, res) => {
+  const original = await prisma.render.findUnique({ where: { id: req.params.id } });
+  if (!original) return res.status(404).json({ error: "render not found" });
+
+  if (original.status !== RenderStatus.failed && original.status !== RenderStatus.stalled) {
+    return res.status(409).json({
+      error: "RENDER_NOT_RETRYABLE",
+      message: `Cannot retry a render with status '${original.status}'. Only failed or stalled renders can be retried.`,
+    });
+  }
+
+  // Block if the model already has another active render (e.g. concurrent retry clicks).
+  const activeRender = await prisma.render.findFirst({
+    where: { modelId: original.modelId, status: { in: ACTIVE_STATUSES } },
+    select: { id: true, status: true },
+  });
+  if (activeRender) {
+    return res.status(409).json({
+      error: "ACTIVE_RENDER_EXISTS",
+      existingRenderId: activeRender.id,
+      status: activeRender.status,
+    });
+  }
+
+  const now = new Date();
+  const newRender = await prisma.render.create({
+    data: {
+      status: RenderStatus.queued,
+      modelId: original.modelId,
+      // Prisma JsonValue includes null; cast to InputJsonValue to satisfy the create type.
+      items: original.items as Parameters<typeof prisma.render.create>[0]["data"]["items"],
+      aiEnhance: original.aiEnhance,
+      queuedAt: now,
+      retriedFromId: original.id,
+    },
+    include: { model: { select: { name: true } } },
+  });
+
+  console.log(JSON.stringify({ event: "render_retry", newRenderId: newRender.id, originalRenderId: original.id }));
+
+  await renderQueue.add("render-room", { renderId: newRender.id }, {
+    attempts: 3,
+    backoff: { type: "exponential", delay: 2000 },
+  });
+
+  return res.status(201).json(serializeRender(newRender));
+});
+
+app.get("/render/:id", async (req, res) => {
+  const render = await prisma.render.findUnique({
+    where: { id: req.params.id },
+    include: { model: { select: { name: true } } },
+  });
+  if (!render) return res.status(404).json({ error: "render not found" });
+
+  return res.json(serializeRender(render));
+});
+
+app.get("/renders", async (req, res) => {
+  const rawModelId = typeof req.query.modelId === "string" ? req.query.modelId : null;
+
   const renders = await prisma.render.findMany({
+    where: rawModelId ? { modelId: rawModelId } : {},
     orderBy: { createdAt: "desc" },
     take: 50,
     include: { model: { select: { name: true } } },
   });
-  return res.json(
-    renders.map((r) => ({
-      id: r.id,
-      status: r.status,
-      modelId: r.modelId,
-      modelName: r.model.name,
-      imageUrl: r.imageUrl,
-      createdAt: r.createdAt.toISOString(),
-    }))
-  );
+  return res.json(renders.map(serializeRender));
 });
 
 app.get("/render/:id/image", async (req, res) => {

@@ -1,8 +1,21 @@
 export enum RenderStatus {
-  pending = "pending",
+  queued = "queued",
   processing = "processing",
-  done = "done"
+  done = "done",
+  failed = "failed",
+  stalled = "stalled",
 }
+
+export const ACTIVE_RENDER_STATUSES: RenderStatus[] = [
+  RenderStatus.queued,
+  RenderStatus.processing,
+];
+
+export const TERMINAL_RENDER_STATUSES: RenderStatus[] = [
+  RenderStatus.done,
+  RenderStatus.failed,
+  RenderStatus.stalled,
+];
 
 export interface RenderItem {
   sku: string;
@@ -27,6 +40,16 @@ export interface RenderJob {
   aiEnhance: boolean;
   modelId: string;
   createdAt: string;
+  queuedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  lastHeartbeatAt: string | null;
+  progress: number;
+  progressLabel: string | null;
+  lastLogLine: string | null;
+  errorMessage: string | null;
+  attempts: number;
+  retriedFromId: string | null;
 }
 
 export interface CreateRenderRequest {
@@ -42,4 +65,14 @@ export interface RenderQueueItem {
   modelName: string;
   imageUrl: string | null;
   createdAt: string;
+  queuedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  lastHeartbeatAt: string | null;
+  progress: number;
+  progressLabel: string | null;
+  lastLogLine: string | null;
+  errorMessage: string | null;
+  attempts: number;
+  retriedFromId: string | null;
 }

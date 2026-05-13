@@ -14,8 +14,13 @@ On any failure it logs the error and leaves the original image intact.
 """
 
 import base64
+import json
 import os
 import time
+
+
+def _progress(pct: int, stage: str, message: str) -> None:
+    print(f'PROGRESS:{json.dumps({"progress": pct, "stage": stage, "message": message})}', flush=True)
 
 
 def enhance_image(image_path: str) -> None:
@@ -39,6 +44,7 @@ def enhance_image(image_path: str) -> None:
     model = os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-1").strip()
 
     print(f"[ai_enhance] Starting AI enhancement  image={image_path}  model={model}")
+    _progress(78, "ai_enhance_calling", "Calling OpenAI image API...")
     start = time.monotonic()
 
     try:

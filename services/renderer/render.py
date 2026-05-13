@@ -19,6 +19,11 @@ import bpy  # type: ignore  # provided by Blender's embedded Python
 from ai_enhance import enhance_image
 
 
+def progress(pct: int, stage: str, message: str) -> None:
+    """Emit a structured progress line that the Node worker parses for heartbeats."""
+    print(f'PROGRESS:{json.dumps({"progress": pct, "stage": stage, "message": message})}', flush=True)
+
+
 def render_scene(output_path: str, use_eevee: bool = False) -> None:
     scene = bpy.context.scene
     scene.render.image_settings.file_format = "PNG"
@@ -40,8 +45,10 @@ def render_scene(output_path: str, use_eevee: bool = False) -> None:
             scene.cycles.samples = 32
         print("[render.py] Render engine: Cycles")
 
+    progress(30, "rendering", "Rendering scene...")
     print(f"[render.py] Rendering scene to {output_path} ...")
     bpy.ops.render.render(write_still=True)
+    progress(70, "render_complete", "Render saved")
     print(f"[render.py] Render complete: {output_path}")
 
 
@@ -65,11 +72,16 @@ def main() -> None:
 
     blend_file = args.blend_file or "(loaded via -b flag)"
     print(f"[render.py] blend_file={blend_file}  render_id={args.render_id}  output={args.output}  ai_enhance={args.ai_enhance}")
+    progress(10, "setup", "Scene loaded, starting render")
 
     render_scene(args.output, use_eevee=args.ai_enhance)
 
     if args.ai_enhance:
+        progress(75, "ai_enhance_start", "Starting AI enhancement...")
         enhance_image(args.output)
+        progress(95, "ai_enhance_complete", "AI enhancement complete")
+
+    progress(100, "done", "All steps complete")
 
 
 if __name__ == "__main__":
