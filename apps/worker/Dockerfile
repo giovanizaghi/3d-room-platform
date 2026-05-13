@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y \
     libxfixes3 \
     libgl1 \
     libxkbcommon0 \
+    libsm6 \
+    libice6 \
     && rm -rf /var/lib/apt/lists/*
 
 # Download Blender 4.2 LTS from the official Blender Foundation mirror.
