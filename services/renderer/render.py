@@ -48,12 +48,20 @@ def render_scene(output_path: str, use_eevee: bool = False) -> None:
     progress(30, "rendering", "Rendering scene...")
     print(f"[render.py] Rendering scene to {output_path} ...")
     try:
-        bpy.ops.render.render(write_still=True)
+        # Use write_still=False and save explicitly — more reliable across Blender versions.
+        # write_still=True can write to a frame-numbered path in Blender 4.x (e.g. out0001.png).
+        bpy.ops.render.render(write_still=False)
     except Exception as exc:
         print(f"[render.py] ERROR during bpy.ops.render.render: {exc}", file=sys.stderr)
         raise
+
+    # Explicitly save the render result to the exact output path.
+    result = bpy.data.images.get("Render Result")
+    if result is None:
+        raise RuntimeError("No 'Render Result' image found after render — render may have failed silently")
+    result.save_render(output_path)
+    print(f"[render.py] Saved render result to {output_path}")
     progress(70, "render_complete", "Render saved")
-    print(f"[render.py] Render complete: {output_path}")
 
 
 def parse_args() -> argparse.Namespace:
