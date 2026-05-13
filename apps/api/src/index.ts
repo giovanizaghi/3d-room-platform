@@ -48,6 +48,10 @@ const upload = multer({
 
 app.use(cors());
 app.use(express.json());
+// Prevent browsers and proxies from caching render status poll responses.
+app.use("/render", (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
+app.use("/renders", (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
+app.use("/models", (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
 
 // ---------------------------------------------------------------------------
 // Health

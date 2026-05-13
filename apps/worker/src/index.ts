@@ -75,11 +75,11 @@ function runRenderer(renderId: string, items: unknown[], modelBlendFile: string,
 
     const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
 
-    // Accumulate stderr lines so we can surface the real error on failure.
-    // "Blender quit" is a stdout line that fires after stderr — without this buffer
-    // it overwrites the actual traceback in lastLogLine.
+    // Blender sends Python tracebacks to stdout (not stderr), so we buffer both.
+    // On failure we pick the most informative buffer to surface the real error.
+    const stdoutBuffer: string[] = [];
     const stderrBuffer: string[] = [];
-    const MAX_STDERR_LINES = 15;
+    const MAX_LOG_LINES = 20;
 
     // Fallback heartbeat: keeps lastHeartbeatAt fresh even between PROGRESS lines.
     const heartbeatTimer = setInterval(async () => {
@@ -116,9 +116,11 @@ function runRenderer(renderId: string, items: unknown[], modelBlendFile: string,
           // Malformed PROGRESS line — treat as plain log.
         }
       } else if (line.trim()) {
-        // Only update lastLogLine from stdout if no stderr has been seen yet —
-        // prevents "Blender quit" (a stdout line) from overwriting a real traceback.
-        if (stderrBuffer.length === 0) {
+        // Buffer all meaningful stdout lines (Blender puts tracebacks here, not stderr).
+        // Exclude the uninformative "Blender quit" termination line.
+        if (!line.startsWith("Blender quit")) {
+          stdoutBuffer.push(line);
+          if (stdoutBuffer.length > MAX_LOG_LINES) stdoutBuffer.shift();
           prisma.render.update({
             where: { id: renderId },
             data: { lastLogLine: line.slice(0, 500) },
@@ -133,7 +135,7 @@ function runRenderer(renderId: string, items: unknown[], modelBlendFile: string,
       if (line.trim()) {
         console.error(`[renderer:${renderId}:stderr] ${line}`);
         stderrBuffer.push(line);
-        if (stderrBuffer.length > MAX_STDERR_LINES) stderrBuffer.shift();
+        if (stderrBuffer.length > MAX_LOG_LINES) stderrBuffer.shift();
         prisma.render.update({
           where: { id: renderId },
           data: { lastLogLine: `[stderr] ${line}`.slice(0, 500) },
@@ -150,12 +152,19 @@ function runRenderer(renderId: string, items: unknown[], modelBlendFile: string,
         console.log(JSON.stringify({ event: "render_completed", renderId, outputPath }));
         resolveImage(outputPath);
       } else {
-        // Build a rich error message from accumulated stderr so the UI shows the real cause.
-        const stderrSummary = stderrBuffer.length > 0
-          ? stderrBuffer.join("\n").slice(-1000)
+        // Prefer stderr for the error summary; fall back to buffered stdout (where Blender
+        // prints Python tracebacks). Filter out the useless "Blender quit" terminal line.
+        const errorSource = stderrBuffer.length > 0 ? stderrBuffer : stdoutBuffer;
+        const errorSummary = errorSource.length > 0
+          ? errorSource.join("\n").slice(-1000)
           : `Renderer exited with code ${code}`;
-        console.log(JSON.stringify({ event: "render_failed", renderId, exitCode: code, command: bin, stderr: stderrSummary }));
-        reject(new Error(stderrSummary));
+        // Persist the real error to the DB so the UI can show it.
+        prisma.render.update({
+          where: { id: renderId },
+          data: { lastLogLine: errorSummary.split("\n").at(-1)?.slice(0, 500) ?? errorSummary.slice(0, 500) },
+        }).catch(() => {});
+        console.log(JSON.stringify({ event: "render_failed", renderId, exitCode: code, command: bin, errorSummary }));
+        reject(new Error(errorSummary));
       }
     });
 
