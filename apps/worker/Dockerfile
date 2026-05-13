@@ -1,8 +1,9 @@
 FROM node:20-slim
 
-# Install Python (renderer), Blender (headless), and openssl (Prisma)
-# blender requires libglu1-mesa and libxi for headless operation
-RUN apt-get update && apt-get install -y \
+# Enable non-free repo (required for blender on Debian Bookworm) and install dependencies.
+# Blender headless requires libglu1-mesa + X11/render libs even in -b (background) mode.
+RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list \
+    && apt-get update && apt-get install -y \
     python3 \
     python3-pil \
     openssl \
@@ -11,7 +12,8 @@ RUN apt-get update && apt-get install -y \
     libxi6 \
     libxrender1 \
     libxxf86vm1 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && blender --version
 
 # Enable corepack for pnpm
 RUN corepack enable
