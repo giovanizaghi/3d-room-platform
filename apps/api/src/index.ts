@@ -419,6 +419,20 @@ app.get("/models/:id/gltf", async (req, res) => {
   }
 });
 
+// POST /models/:id/convert — re-queues a GLB conversion job for an existing model.
+// Useful when the automatic conversion failed or the GLB is missing.
+app.post("/models/:id/convert", async (req, res) => {
+  const model = await prisma.model3D.findUnique({ where: { id: req.params.id }, select: { id: true } });
+  if (!model) return res.status(404).json({ error: "model not found" });
+
+  await convertQueue.add("convert-gltf", { modelId: model.id }, {
+    attempts: 2,
+    backoff: { type: "exponential", delay: 3000 },
+  });
+
+  return res.status(202).json({ queued: true });
+});
+
 app.get("/render/:id/image", async (req, res) => {
   const renderId = req.params.id;
 

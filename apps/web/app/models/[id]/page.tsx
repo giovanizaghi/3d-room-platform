@@ -9,6 +9,7 @@ import {
   type RenderQueueItem,
 } from "@repo/types";
 import { useRenderQueue } from "../../components/RenderQueueContext";
+import { ModelViewer } from "../../components/ModelViewer";
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -57,6 +58,7 @@ export default function ModelPage({ params }: { params: { id: string } }) {
   const [aiEnhance, setAiEnhance] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [gltfConverting, setGltfConverting] = useState(false);
 
   // ID of the render we're tracking on this page (set by submit or by mount recovery).
   const [currentRenderId, setCurrentRenderId] = useState<string | null>(null);
@@ -166,6 +168,20 @@ export default function ModelPage({ params }: { params: { id: string } }) {
   }, [id]);
 
   // ------------------------------------------------------------------
+  // Trigger a (re-)conversion of the .blend to .glb.
+  // ------------------------------------------------------------------
+  const onTriggerConversion = useCallback(async () => {
+    setGltfConverting(true);
+    try {
+      await fetch(`${apiBase}/models/${id}/convert`, { method: "POST" });
+    } catch {
+      // Best-effort — worker logs will surface errors.
+    } finally {
+      setGltfConverting(false);
+    }
+  }, [id]);
+
+  // ------------------------------------------------------------------
   // Submit a new render.
   // ------------------------------------------------------------------
   const onGenerateRender = useCallback(async () => {
@@ -263,6 +279,45 @@ export default function ModelPage({ params }: { params: { id: string } }) {
           </svg>
           All models
         </Link>
+
+        {/* 3D Viewer */}
+        <div className="rounded-2xl border border-border bg-bg-card/80 backdrop-blur-sm overflow-hidden shadow-2xl">
+          {model?.gltfReady ? (
+            <ModelViewer glbUrl={`${apiBase}/models/${id}/gltf`} />
+          ) : (
+            <div className="h-72 flex flex-col items-center justify-center gap-4 bg-black/20">
+              <svg className="h-12 w-12 text-text-muted/30" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+              </svg>
+              <div className="text-center space-y-1">
+                <p className="text-sm font-medium text-text-secondary">3D preview not available</p>
+                <p className="text-xs text-text-muted">The GLB file hasn&apos;t been generated yet</p>
+              </div>
+              <button
+                onClick={onTriggerConversion}
+                disabled={gltfConverting}
+                className="inline-flex items-center gap-2 rounded-xl border border-border bg-bg-card/60 px-4 py-2 text-sm font-medium text-text-primary hover:bg-bg-card transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {gltfConverting ? (
+                  <>
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    <span>Queuing…</span>
+                  </>
+                ) : (
+                  <>
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    <span>Generate 3D Preview</span>
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+        </div>
 
         <div className="rounded-2xl border border-border bg-bg-card/80 backdrop-blur-sm p-8 shadow-2xl">
           {/* Model info */}
