@@ -398,15 +398,25 @@ app.get("/models/:id/gltf", async (req, res) => {
   if (!model) return res.status(404).json({ error: "model not found" });
   if (!model.gltfFilePath) return res.status(404).json({ error: "GLB not ready yet" });
 
-  // Full URL means the file is in S3 — redirect directly.
-  if (model.gltfFilePath.startsWith("http")) {
-    return res.redirect(302, model.gltfFilePath);
-  }
-
-  // S3 key (no leading slash and no http) — should not reach here in S3 mode because
-  // the worker stores the public URL, but guard anyway.
-  if (isStorageKey(model.gltfFilePath)) {
-    return res.status(503).json({ error: "GLB storage URL unavailable" });
+  // Always proxy the file through the API so the browser never hits the storage
+  // origin directly — avoids CORS issues when the bucket has no CORS headers set.
+  if (model.gltfFilePath.startsWith("http") || isStorageKey(model.gltfFilePath)) {
+    // Resolve S3 key to a public URL if needed (rare: worker normally stores the URL).
+    const url = model.gltfFilePath.startsWith("http")
+      ? model.gltfFilePath
+      : `${process.env.STORAGE_PUBLIC_URL ?? ""}/${model.gltfFilePath}`;
+    try {
+      const upstream = await fetch(url);
+      if (!upstream.ok) {
+        return res.status(502).json({ error: "Failed to fetch GLB from storage" });
+      }
+      const buffer = Buffer.from(await upstream.arrayBuffer());
+      res.setHeader("Content-Type", "model/gltf-binary");
+      res.setHeader("Content-Disposition", `inline; filename="model.glb"`);
+      return res.send(buffer);
+    } catch {
+      return res.status(502).json({ error: "Storage fetch failed" });
+    }
   }
 
   try {
