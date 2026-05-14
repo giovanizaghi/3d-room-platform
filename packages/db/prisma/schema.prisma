@@ -21,6 +21,7 @@ model Model3D {
   description   String?
   blendFilePath String
   thumbnailPath String?
+  gltfFilePath  String?
   createdAt     DateTime @default(now())
 
   renders Render[]

@@ -29,6 +29,7 @@ export interface Model3D {
   description: string | null;
   blendFilePath: string;
   thumbnailPath: string | null;
+  gltfFilePath: string | null;
   createdAt: string;
 }
 

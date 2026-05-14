@@ -5,11 +5,12 @@ import { copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { prisma, RenderStatus } from "@repo/db";
-import { createRenderQueue } from "@repo/queue";
+import { createRenderQueue, createConvertQueue } from "@repo/queue";
 import { isConfigured as storageConfigured, isStorageKey, upload as storageUpload } from "@repo/storage";
 
 const app = express();
 const renderQueue = createRenderQueue();
+const convertQueue = createConvertQueue();
 
 const outputDir = process.env.OUTPUT_DIR ?? resolve(process.cwd(), "../../services/renderer/output");
 const modelsDir = process.env.MODELS_DIR ?? resolve(process.cwd(), "../../services/renderer/models");
@@ -127,6 +128,12 @@ app.post("/models", upload.fields([
 
   console.log(JSON.stringify({ event: "model_created", modelId: model.id, name: model.name, storage: storageConfigured() ? "s3" : "local" }));
 
+  // Queue background GLB conversion — fire-and-forget, does not block the response.
+  await convertQueue.add("convert-gltf", { modelId }, {
+    attempts: 2,
+    backoff: { type: "exponential", delay: 3000 },
+  });
+
   return res.status(201).json({
     id: model.id,
     name: model.name,
@@ -161,6 +168,7 @@ app.get("/models/:id", async (req, res) => {
     name: model.name,
     description: model.description,
     thumbnailUrl: model.thumbnailPath ? `/models/${model.id}/thumbnail` : null,
+    gltfReady: model.gltfFilePath != null,
     createdAt: model.createdAt.toISOString(),
   });
 });
@@ -383,6 +391,32 @@ app.get("/renders", async (req, res) => {
     include: { model: { select: { name: true } } },
   });
   return res.json(renders.map(serializeRender));
+});
+
+app.get("/models/:id/gltf", async (req, res) => {
+  const model = await prisma.model3D.findUnique({ where: { id: req.params.id }, select: { gltfFilePath: true } });
+  if (!model) return res.status(404).json({ error: "model not found" });
+  if (!model.gltfFilePath) return res.status(404).json({ error: "GLB not ready yet" });
+
+  // Full URL means the file is in S3 — redirect directly.
+  if (model.gltfFilePath.startsWith("http")) {
+    return res.redirect(302, model.gltfFilePath);
+  }
+
+  // S3 key (no leading slash and no http) — should not reach here in S3 mode because
+  // the worker stores the public URL, but guard anyway.
+  if (isStorageKey(model.gltfFilePath)) {
+    return res.status(503).json({ error: "GLB storage URL unavailable" });
+  }
+
+  try {
+    const data = await readFile(model.gltfFilePath);
+    res.setHeader("Content-Type", "model/gltf-binary");
+    res.setHeader("Content-Disposition", `inline; filename="model.glb"`);
+    return res.send(data);
+  } catch {
+    return res.status(404).json({ error: "GLB file not found on disk" });
+  }
 });
 
 app.get("/render/:id/image", async (req, res) => {

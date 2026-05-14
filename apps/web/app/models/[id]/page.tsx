@@ -14,6 +14,7 @@ const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
 type ModelSummary = Pick<Model3D, "id" | "name" | "description"> & {
   thumbnailUrl: string | null;
+  gltfReady: boolean;
   createdAt: string;
 };
 
@@ -281,7 +282,20 @@ export default function ModelPage({ params }: { params: { id: string } }) {
                 )}
               </div>
               <div>
-                <h1 className="text-xl font-semibold text-text-primary">{model.name}</h1>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h1 className="text-xl font-semibold text-text-primary">{model.name}</h1>
+                  {model.gltfReady ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
+                      <span className="h-1.5 w-1.5 rounded-full bg-success" />
+                      3D ready
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-medium text-warning">
+                      <span className="h-1.5 w-1.5 rounded-full bg-warning animate-pulse" />
+                      Converting…
+                    </span>
+                  )}
+                </div>
                 {model.description && (
                   <p className="mt-1 text-sm text-text-secondary">{model.description}</p>
                 )}

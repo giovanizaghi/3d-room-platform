@@ -10,14 +10,17 @@ import { prisma, RenderStatus } from "@repo/db";
 import { isConfigured as storageConfigured, isStorageKey, upload as storageUpload, download as storageDownload } from "@repo/storage";
 import {
   RENDER_QUEUE_NAME,
+  CONVERT_QUEUE_NAME,
   queueConnection,
-  type RenderJobPayload
+  type RenderJobPayload,
+  type ConvertJobPayload,
 } from "@repo/queue";
 
 const rootDir = resolve(process.cwd(), "../..");
 const outputDir = process.env.OUTPUT_DIR ?? resolve(rootDir, "services/renderer/output");
 const rendererDir = resolve(rootDir, "services/renderer");
 const rendererScript = process.env.RENDERER_SCRIPT ?? resolve(rendererDir, "render.py");
+const convertScript = process.env.CONVERT_SCRIPT ?? resolve(rendererDir, "convert_gltf.py");
 const fallbackBlendFile = process.env.BLEND_FILE ?? resolve(rendererDir, "chair.blend");
 const blenderBin = process.env.BLENDER_BIN ?? "blender";
 const useBlender = (process.env.USE_BLENDER ?? "true") === "true";
@@ -326,7 +329,121 @@ console.log(JSON.stringify({
   blenderBin: useBlender ? blenderBin : null,
   fallbackBlendFile: useBlender ? fallbackBlendFile : null,
   rendererScript,
+  convertScript,
   outputDir,
   stallThresholdMs: STALL_THRESHOLD_MS,
 }));
+
+// ---------------------------------------------------------------------------
+// Convert worker: exports .blend → .glb using Blender headless.
+// Runs on a separate queue (convert-jobs) so conversion throughput is
+// independent of render throughput.
+// ---------------------------------------------------------------------------
+
+const convertWorker = new Worker<ConvertJobPayload>(
+  CONVERT_QUEUE_NAME,
+  async (job) => {
+    const { modelId } = job.data;
+
+    console.log(JSON.stringify({ event: "convert_job_started", modelId, attempt: job.attemptsMade + 1 }));
+
+    const model = await prisma.model3D.findUnique({ where: { id: modelId } });
+    if (!model) throw new Error(`Model ${modelId} not found`);
+
+    const storedBlendPath = model.blendFilePath;
+
+    // Download from S3 to a temp dir if the path is an S3 key.
+    let blendFile = storedBlendPath;
+    let tempDir: string | null = null;
+    if (isStorageKey(storedBlendPath)) {
+      tempDir = await mkdtemp(join(tmpdir(), `convert-${modelId}-`));
+      blendFile = join(tempDir, "model.blend");
+      await storageDownload(storedBlendPath, blendFile);
+      console.log(JSON.stringify({ event: "blend_downloaded_for_convert", modelId, dest: blendFile }));
+    }
+
+    // Output: same directory as blend file, always named model.glb.
+    const glbLocal = join(resolve(blendFile, ".."), "model.glb");
+
+    try {
+      await new Promise<void>((res, rej) => {
+        const { bin, args } = useBlender
+          ? {
+              bin: blenderBin,
+              args: ["-b", blendFile, "-P", convertScript, "--", "--output", glbLocal],
+            }
+          : {
+              bin: process.env.PYTHON_BIN ?? "python3",
+              args: [convertScript, "--output", glbLocal],
+            };
+
+        console.log(JSON.stringify({ event: "convert_spawn", modelId, command: [bin, ...args].join(" ") }));
+
+        const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+        const stdoutLines: string[] = [];
+        const stderrLines: string[] = [];
+
+        createInterface({ input: child.stdout! }).on("line", (line) => {
+          console.log(`[convert:${modelId}] ${line}`);
+          if (!line.startsWith("PROGRESS:") && !line.startsWith("Blender quit") && line.trim()) {
+            stdoutLines.push(line);
+            if (stdoutLines.length > 20) stdoutLines.shift();
+          }
+        });
+
+        createInterface({ input: child.stderr! }).on("line", (line) => {
+          if (line.trim()) {
+            console.error(`[convert:${modelId}:stderr] ${line}`);
+            stderrLines.push(line);
+            if (stderrLines.length > 20) stderrLines.shift();
+          }
+        });
+
+        child.on("exit", (code) => {
+          if (code === 0) {
+            res();
+          } else {
+            const src = stderrLines.length > 0 ? stderrLines : stdoutLines;
+            rej(new Error(src.join("\n").slice(-1000) || `Blender exited with code ${code}`));
+          }
+        });
+
+        child.on("error", rej);
+      });
+
+      // Upload .glb to S3 if configured, otherwise keep local.
+      let gltfFilePath: string = glbLocal;
+      if (storageConfigured()) {
+        const glbKey = `models/${modelId}/model.glb`;
+        gltfFilePath = await storageUpload(glbKey, glbLocal, "model/gltf-binary");
+        await rm(glbLocal).catch(() => {});
+        console.log(JSON.stringify({ event: "glb_uploaded", modelId, url: gltfFilePath }));
+      }
+
+      await prisma.model3D.update({
+        where: { id: modelId },
+        data: { gltfFilePath },
+      });
+
+      console.log(JSON.stringify({ event: "convert_complete", modelId, gltfFilePath }));
+    } finally {
+      if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  },
+  {
+    connection: queueConnection,
+    concurrency: 1,
+    lockDuration: 300_000,
+  }
+);
+
+convertWorker.on("failed", (job, err) => {
+  if (!job) return;
+  console.log(JSON.stringify({
+    event: "convert_job_failed",
+    modelId: job.data.modelId,
+    error: err.message,
+    attempt: job.attemptsMade + 1,
+  }));
+});
 
