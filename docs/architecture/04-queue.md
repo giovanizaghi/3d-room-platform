@@ -2,65 +2,110 @@
 
 ## Overview
 
-Redis is used as the backing store for the job queue. BullMQ manages the full job lifecycle on top of Redis, providing persistent queuing, retry logic, and state tracking. The API acts as the producer, enqueuing jobs after persisting them to the database. The worker acts as the consumer, picking up jobs and processing them asynchronously.
+Redis is the backing store for two independent BullMQ queues. The API acts as the producer for both. A single worker process hosts two separate `Worker` instances, each consuming from one queue. The queues are intentionally separate to give each job type its own concurrency setting, retry policy, and failure domain.
 
 ---
 
-## Core Responsibilities
+## Queues
 
-- Store pending render jobs durably in Redis
-- Deliver jobs to available workers in order
-- Handle automatic retries on failure
-- Track and expose job state throughout its lifecycle
+| Queue name      | Producer          | Consumer        | Concurrency | Retries |
+| --------------- | ----------------- | --------------- | ----------- | ------- |
+| `render-jobs`   | `POST /render`    | Render worker   | 2           | 3, exponential 2 s |
+| `convert-jobs`  | `POST /models`, `POST /models/:id/convert` | Convert worker | 1 | 2, exponential 3 s |
 
 ---
 
-## Queue Flow Diagram
+## Flow Diagram
 
 ```mermaid
 flowchart LR
     API[API Service]
-    Redis[(Redis / BullMQ)]
-    Worker[Worker Service]
+    RenderQ[(render-jobs\nRedis / BullMQ)]
+    ConvertQ[(convert-jobs\nRedis / BullMQ)]
+    RenderW[Render Worker]
+    ConvertW[Convert Worker]
 
-    API -->|Enqueue job| Redis
-    Redis -->|Dequeue job| Worker
+    API -->|"add('render-room', {renderId})"| RenderQ
+    API -->|"add('convert-gltf', {modelId})"| ConvertQ
+    RenderQ -->|dequeue| RenderW
+    ConvertQ -->|dequeue| ConvertW
 ```
 
 ---
 
-## Job Lifecycle in Queue
+## Job Payloads
 
-BullMQ manages jobs through the following states:
+```typescript
+// render-jobs
+type RenderJobPayload = {
+  renderId: string; // UUID of the Render record
+};
 
-| State       | Description                                                   |
-| ----------- | ------------------------------------------------------------- |
-| `waiting`   | Job has been enqueued and is waiting for an available worker  |
-| `active`    | A worker has picked up the job and is currently processing it |
-| `completed` | Job finished successfully                                     |
-| `failed`    | All retry attempts were exhausted without success             |
-
-Jobs move through these states atomically. BullMQ uses Redis atomic operations to ensure a job is only picked up by one worker at a time.
+// convert-jobs
+type ConvertJobPayload = {
+  modelId: string; // UUID of the Model3D record
+};
+```
 
 ---
 
-## Retry Behavior
+## Job Lifecycle in BullMQ
 
-BullMQ retry configuration per job:
+Both queues move jobs through the same BullMQ internal states:
 
-- **Attempts**: Maximum number of times a job will be tried before being marked `failed`. Configurable per queue or per job.
-- **Backoff**: Supports fixed or exponential delay between retries. Exponential backoff increases the wait time after each failure (e.g., 1s → 2s → 4s), reducing load on a recovering system.
-- **Delay**: An initial delay can be set before the first attempt or between retries, useful for transient failure scenarios such as a renderer process restarting.
+| BullMQ state | Description                                                      |
+| ------------ | ---------------------------------------------------------------- |
+| `waiting`    | Enqueued, waiting for an available worker slot                   |
+| `active`     | Worker has claimed the job; lock is held for 300 s (auto-renewed) |
+| `completed`  | Handler resolved without throwing                                |
+| `failed`     | Handler threw on the final attempt                               |
+| `delayed`    | Awaiting backoff delay before the next retry attempt             |
+
+The `lockDuration` for both workers is set to **300 seconds** (5 minutes). BullMQ auto-renews the lock every 150 s while the worker's async handler is still running, preventing false stalls for long Blender processes.
+
+---
+
+## Application-Level Job States
+
+These are distinct from BullMQ's internal states and are tracked in PostgreSQL:
+
+| DB status    | Meaning                                                        |
+| ------------ | -------------------------------------------------------------- |
+| `queued`     | Record created; BullMQ job enqueued                            |
+| `processing` | Worker picked up the job; Blender is running                   |
+| `done`       | Render/conversion complete; output stored                      |
+| `failed`     | All BullMQ retry attempts exhausted                            |
+| `stalled`    | Heartbeat timed out; detected by stall monitor (render jobs only) |
+
+---
+
+## Retry Configuration
+
+### `render-jobs`
+```typescript
+renderQueue.add("render-room", { renderId }, {
+  attempts: 3,
+  backoff: { type: "exponential", delay: 2000 },
+});
+```
+
+### `convert-jobs`
+```typescript
+convertQueue.add("convert-gltf", { modelId }, {
+  attempts: 2,
+  backoff: { type: "exponential", delay: 3000 },
+});
+```
 
 ---
 
 ## Design Considerations
 
-**Why Redis was chosen**
-Redis provides sub-millisecond latency, built-in persistence options, and atomic list/set operations that make it well-suited as a queue backend. BullMQ is purpose-built on Redis and handles all queue primitives without requiring a separate message broker.
+**Why two separate queues instead of one queue with different job types**
+Separate queues allow independent concurrency limits (renders: 2, conversions: 1), independent retry policies, and independent failure domains. A burst of conversion jobs won't consume slots needed for in-progress renders.
 
-**Why a queue is needed**
-Rendering is asynchronous and variable in duration. Without a queue, the system would have no way to buffer incoming jobs during traffic spikes, track their state, or retry failures. The queue acts as a durable handoff point between the API and the worker.
+**Why Redis / BullMQ**
+Redis provides sub-millisecond latency and atomic list operations. BullMQ adds a battle-tested job lifecycle on top, including delayed retries, lock-based deduplication, and event hooks — without requiring a separate message broker.
 
-**Why not a direct API → Worker call**
-A direct call (HTTP or RPC) would couple availability of the API to availability of the worker. If the worker is down, busy, or restarting, jobs would be lost. The queue decouples producers from consumers: the API can enqueue regardless of worker state, and the worker processes when ready.
+**Why a queue instead of direct API → Worker calls**
+If the worker is down or restarting, HTTP calls would drop jobs silently. A Redis-backed queue persists jobs durably and delivers them when the worker comes back online, with no application-level retry logic needed.
