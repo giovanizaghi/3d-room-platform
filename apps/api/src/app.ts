@@ -22,15 +22,23 @@ const ALLOWED_THUMBNAIL_EXTS = new Set([".png", ".jpg", ".jpeg"]);
 const MAX_BLEND_BYTES = 100 * 1024 * 1024; // 100 MB
 const MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024; // 5 MB
 
-// Blender files always start with the 7-byte magic sequence "BLENDER".
-const BLEND_MAGIC = Buffer.from("BLENDER");
+// Blender files start with "BLENDER" (uncompressed), 0x1f8b (gzip, older Blender),
+// or 0x28b52ffd (zstd, Blender 4.0+ default).
+const BLEND_MAGIC_UNCOMPRESSED = Buffer.from("BLENDER");
+const BLEND_MAGIC_GZIP = Buffer.from([0x1f, 0x8b]);
+const BLEND_MAGIC_ZSTD = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 async function isValidBlendFile(filePath: string): Promise<boolean> {
   let fh;
   try {
     fh = await open(filePath, "r");
     const buf = Buffer.alloc(7);
     const { bytesRead } = await fh.read(buf, 0, 7, 0);
-    return bytesRead === 7 && buf.equals(BLEND_MAGIC);
+    if (bytesRead < 2) return false;
+    return (
+      (bytesRead === 7 && buf.equals(BLEND_MAGIC_UNCOMPRESSED)) ||
+      buf.subarray(0, 2).equals(BLEND_MAGIC_GZIP) ||
+      (bytesRead >= 4 && buf.subarray(0, 4).equals(BLEND_MAGIC_ZSTD))
+    );
   } catch {
     return false;
   } finally {
