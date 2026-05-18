@@ -1,7 +1,7 @@
 import cors from "cors";
 import express from "express";
 import multer from "multer";
-import { copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
+import { copyFile, mkdir, open, readFile, rm, stat } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { prisma, RenderStatus } from "@repo/db";
@@ -21,6 +21,22 @@ const ALLOWED_BLEND_EXT = ".blend";
 const ALLOWED_THUMBNAIL_EXTS = new Set([".png", ".jpg", ".jpeg"]);
 const MAX_BLEND_BYTES = 100 * 1024 * 1024; // 100 MB
 const MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024; // 5 MB
+
+// Blender files always start with the 7-byte magic sequence "BLENDER".
+const BLEND_MAGIC = Buffer.from("BLENDER");
+async function isValidBlendFile(filePath: string): Promise<boolean> {
+  let fh;
+  try {
+    fh = await open(filePath, "r");
+    const buf = Buffer.alloc(7);
+    const { bytesRead } = await fh.read(buf, 0, 7, 0);
+    return bytesRead === 7 && buf.equals(BLEND_MAGIC);
+  } catch {
+    return false;
+  } finally {
+    await fh?.close();
+  }
+}
 
 // Multer: store files in a temp staging area; we move them per-model after DB record created
 const upload = multer({
@@ -85,6 +101,9 @@ app.post("/models", upload.fields([
   }
   if (blendFile.size > MAX_BLEND_BYTES) {
     return res.status(400).json({ error: "blendFile exceeds 100 MB limit" });
+  }
+  if (!await isValidBlendFile(blendFile.path)) {
+    return res.status(400).json({ error: "Invalid .blend file: the uploaded file is not a Blender file" });
   }
   if (thumbnailFile && thumbnailFile.size > MAX_THUMBNAIL_BYTES) {
     return res.status(400).json({ error: "thumbnail exceeds 5 MB limit" });
@@ -211,6 +230,9 @@ app.put("/models/:id", upload.fields([
   if (blendFile) {
     if (blendFile.size > MAX_BLEND_BYTES) {
       return res.status(400).json({ error: "blendFile exceeds 100 MB limit" });
+    }
+    if (!await isValidBlendFile(blendFile.path)) {
+      return res.status(400).json({ error: "Invalid .blend file: the uploaded file is not a Blender file" });
     }
 
     // Remove old local blend file (best-effort).

@@ -20,9 +20,9 @@ RUN apt-get update && apt-get install -y \
     libgles2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Download Blender 4.2 LTS from the official Blender Foundation mirror.
-ARG BLENDER_VERSION=4.2.0
-RUN curl -fSL "https://download.blender.org/release/Blender4.2/blender-${BLENDER_VERSION}-linux-x64.tar.xz" \
+# Download Blender 5.1 LTS from the official Blender Foundation mirror.
+ARG BLENDER_VERSION=5.1.1
+RUN curl -fSL "https://download.blender.org/release/Blender5.1/blender-${BLENDER_VERSION}-linux-x64.tar.xz" \
     | tar -xJ -C /opt \
     && ln -s "/opt/blender-${BLENDER_VERSION}-linux-x64/blender" /usr/local/bin/blender \
     && blender --version
