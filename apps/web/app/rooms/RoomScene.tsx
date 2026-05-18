@@ -9,6 +9,7 @@ interface RoomSceneProps {
 }
 
 const WALL_HEIGHT = 2.7;
+const THICKNESS = 0.15;
 
 export function RoomScene({ size }: RoomSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -42,76 +43,106 @@ export function RoomScene({ size }: RoomSceneProps) {
     camera.position.set(size * 0.9, size * 0.6, size * 0.9);
 
     // ---- Lighting --------------------------------------------------------
-    scene.add(new THREE.AmbientLight(0xffffff, 1.8));
+    // Soft ambient fill so the room interior isn't completely black
+    scene.add(new THREE.AmbientLight(0xdce8ff, 0.9));
 
-    const sunLight = new THREE.DirectionalLight(0xfff4e0, 2.0);
-    sunLight.position.set(size * 0.5, size * 2, size * 0.5);
+    // Sun: angled from outside the room (high + offset) for dramatic interior shadows
+    const sunLight = new THREE.DirectionalLight(0xfff4e0, 3.5);
+    sunLight.position.set(size * 1.8, size * 2.4, size * 0.6);
+    sunLight.target.position.set(0, 0, 0);
     sunLight.castShadow = true;
-    sunLight.shadow.mapSize.set(1024, 1024);
+    sunLight.shadow.mapSize.set(2048, 2048);
+    sunLight.shadow.bias = -0.0005;
     sunLight.shadow.camera.near = 0.1;
-    sunLight.shadow.camera.far = size * 5;
-    sunLight.shadow.camera.left = -size;
-    sunLight.shadow.camera.right = size;
-    sunLight.shadow.camera.top = size;
-    sunLight.shadow.camera.bottom = -size;
+    sunLight.shadow.camera.far = size * 8;
+    const sc = size * 1.5;
+    sunLight.shadow.camera.left   = -sc;
+    sunLight.shadow.camera.right  =  sc;
+    sunLight.shadow.camera.top    =  sc;
+    sunLight.shadow.camera.bottom = -sc;
     scene.add(sunLight);
+    scene.add(sunLight.target);
 
     // ---- Room geometry ---------------------------------------------------
     const half = size / 2;
 
-    // Floor
+    // Floor slab — 15 cm thick, sits with top face at y=0
     const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(size, size),
+      new THREE.BoxGeometry(size + THICKNESS * 2, THICKNESS, size + THICKNESS * 2),
       new THREE.MeshStandardMaterial({ color: 0xc8b99a, roughness: 0.9, metalness: 0.0 }),
     );
-    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = -THICKNESS / 2;
+    floor.castShadow = false;
     floor.receiveShadow = true;
     scene.add(floor);
 
-    // Floor grid (tile guides)
+    // Floor grid (tile guides) — sits just above floor surface
     const grid = new THREE.GridHelper(size, size, 0x9a8a72, 0x9a8a72);
     grid.position.y = 0.002;
     (grid.material as THREE.Material).opacity = 0.25;
     (grid.material as THREE.Material).transparent = true;
     scene.add(grid);
 
-    // Wall material — DoubleSide for reliable interior rendering
+    // Wall material
     const wallMat = new THREE.MeshStandardMaterial({
       color: 0xf0ece4,
       roughness: 0.85,
       metalness: 0.0,
-      side: THREE.DoubleSide,
     });
 
-    const makeWall = () =>
-      new THREE.Mesh(new THREE.PlaneGeometry(size, WALL_HEIGHT), wallMat.clone());
+    // Front & back walls span the full room width (x-axis)
+    const makeXWall = () =>
+      new THREE.Mesh(
+        new THREE.BoxGeometry(size + THICKNESS * 2, WALL_HEIGHT, THICKNESS),
+        wallMat.clone(),
+      );
 
-    // Front wall (z = -half)
-    const frontWall = makeWall();
-    frontWall.position.set(0, WALL_HEIGHT / 2, -half);
+    // Left & right walls span the interior depth (z-axis) — no overlap at corners
+    const makeZWall = () =>
+      new THREE.Mesh(
+        new THREE.BoxGeometry(THICKNESS, WALL_HEIGHT, size),
+        wallMat.clone(),
+      );
+
+    // Front wall (z = -half - THICKNESS/2, outer face at z = -half - THICKNESS)
+    const frontWall = makeXWall();
+    frontWall.position.set(0, WALL_HEIGHT / 2, -(half + THICKNESS / 2));
+    frontWall.castShadow = true;
     frontWall.receiveShadow = true;
     scene.add(frontWall);
 
-    // Back wall (z = +half, flipped so interior faces -Z)
-    const backWall = makeWall();
-    backWall.rotation.y = Math.PI;
-    backWall.position.set(0, WALL_HEIGHT / 2, half);
+    // Back wall (z = +half + THICKNESS/2)
+    const backWall = makeXWall();
+    backWall.position.set(0, WALL_HEIGHT / 2, half + THICKNESS / 2);
+    backWall.castShadow = true;
     backWall.receiveShadow = true;
     scene.add(backWall);
 
-    // Left wall (x = -half, rotated so interior faces +X)
-    const leftWall = makeWall();
-    leftWall.rotation.y = Math.PI / 2;
-    leftWall.position.set(-half, WALL_HEIGHT / 2, 0);
+    // Left wall (x = -half - THICKNESS/2)
+    const leftWall = makeZWall();
+    leftWall.position.set(-(half + THICKNESS / 2), WALL_HEIGHT / 2, 0);
+    leftWall.castShadow = true;
     leftWall.receiveShadow = true;
     scene.add(leftWall);
 
-    // Right wall (x = +half, rotated so interior faces -X)
-    const rightWall = makeWall();
-    rightWall.rotation.y = -Math.PI / 2;
-    rightWall.position.set(half, WALL_HEIGHT / 2, 0);
+    // Right wall (x = +half + THICKNESS/2)
+    const rightWall = makeZWall();
+    rightWall.position.set(half + THICKNESS / 2, WALL_HEIGHT / 2, 0);
+    rightWall.castShadow = true;
     rightWall.receiveShadow = true;
     scene.add(rightWall);
+
+    // Invisible ceiling — receives shadows only via ShadowMaterial.
+    // The plane itself is transparent; only the shadow is drawn,
+    // creating soft sun patches on the floor visible through the open top.
+    const ceiling = new THREE.Mesh(
+      new THREE.PlaneGeometry(size, size),
+      new THREE.ShadowMaterial({ opacity: 0.45, transparent: true }),
+    );
+    ceiling.rotation.x = Math.PI / 2;  // face downward
+    ceiling.position.y = WALL_HEIGHT;
+    ceiling.receiveShadow = true;
+    scene.add(ceiling);
 
     // ---- OrbitControls ---------------------------------------------------
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -127,11 +158,7 @@ export function RoomScene({ size }: RoomSceneProps) {
 
     // ---- Wall hiding (Sims-style) ----------------------------------------
     // Each frame: hide the 2 walls closest to the camera so we can see inside.
-    // Room is centered at origin, so we compare camera sign on each axis:
-    //   front wall at z=-half → hide when camera.z < 0 (camera is on same side)
-    //   back wall  at z=+half → hide when camera.z > 0
-    //   left wall  at x=-half → hide when camera.x < 0
-    //   right wall at x=+half → hide when camera.x > 0
+    // Walls are now 15 cm thick boxes; the hide threshold accounts for thickness.
     const updateWalls = () => {
       const cx = camera.position.x;
       const cz = camera.position.z;
