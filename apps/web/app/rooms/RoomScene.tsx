@@ -194,20 +194,21 @@ export function RoomScene({
 
     // ---- TransformControls -----------------------------------------------
     const tc = new TransformControls(camera, renderer.domElement);
-    scene.add(tc as unknown as THREE.Object3D);
+    // Show all 3 axes in both modes — same as Blender.
+    // For translate: Y movement is overridden by surface snap anyway.
+    // For rotate: all 3 rings visible; Y is the most useful for furniture.
+    tc.size = 1.2;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    scene.add(tc as any);
 
     let currentTool: ToolMode = tool;
 
     const applyTool = (mode: ToolMode) => {
       currentTool = mode;
       tc.setMode(mode);
-      if (mode === "translate") {
-        // Hide Y arrow — Y is auto-computed by surface snap
-        tc.showX = true; tc.showY = false; tc.showZ = true;
-      } else {
-        // Rotate on Y axis only — furniture stays upright
-        tc.showX = false; tc.showY = true; tc.showZ = false;
-      }
+      tc.showX = true;
+      tc.showY = true;
+      tc.showZ = true;
     };
 
     applyTool(tool);
@@ -306,6 +307,12 @@ export function RoomScene({
     renderer.domElement.addEventListener("pointerdown", onPointerDown);
     renderer.domElement.addEventListener("pointerup",   onPointerUp);
 
+    // ---- ESC to deselect -------------------------------------------------
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelection(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+
     // ---- Wall hiding (Sims-style) ----------------------------------------
     const updateWalls = () => {
       const cx = camera.position.x;
@@ -341,6 +348,7 @@ export function RoomScene({
       ro.disconnect();
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       renderer.domElement.removeEventListener("pointerup",   onPointerUp);
+      window.removeEventListener("keydown", onKeyDown);
       addObjectRef.current    = null;
       deleteSelectedRef.current = null;
       applyToolRef.current    = null;
@@ -361,7 +369,9 @@ export function RoomScene({
         <span className="opacity-40">·</span>
         <span>Scroll to zoom</span>
         <span className="opacity-40">·</span>
-        <span>Click object to select</span>
+        <span>Click to select</span>
+        <span className="opacity-40">·</span>
+        <span>Esc to deselect</span>
       </div>
     </div>
   );
