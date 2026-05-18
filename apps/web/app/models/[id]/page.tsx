@@ -60,6 +60,15 @@ export default function ModelPage({ params }: { params: { id: string } }) {
   const [error, setError] = useState<string | null>(null);
   const [gltfConverting, setGltfConverting] = useState(false);
 
+  // Edit model state
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editDesc, setEditDesc] = useState("");
+  const [editBlend, setEditBlend] = useState<File | null>(null);
+  const [editThumb, setEditThumb] = useState<File | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
   // ID of the render we're tracking on this page (set by submit or by mount recovery).
   const [currentRenderId, setCurrentRenderId] = useState<string | null>(null);
 
@@ -218,6 +227,53 @@ export default function ModelPage({ params }: { params: { id: string } }) {
   }, [id, aiEnhance, model, addOptimistic, openQueue]);
 
   // ------------------------------------------------------------------
+  // Open edit form — pre-fill with current model values.
+  // ------------------------------------------------------------------
+  const onOpenEdit = useCallback(() => {
+    if (!model) return;
+    setEditName(model.name);
+    setEditDesc(model.description ?? "");
+    setEditBlend(null);
+    setEditThumb(null);
+    setEditError(null);
+    setEditing(true);
+  }, [model]);
+
+  // ------------------------------------------------------------------
+  // Save edited model data.
+  // ------------------------------------------------------------------
+  const onSaveEdit = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editName.trim()) {
+      setEditError("Name is required");
+      return;
+    }
+    setEditSaving(true);
+    setEditError(null);
+
+    try {
+      const form = new FormData();
+      form.append("name", editName.trim());
+      form.append("description", editDesc.trim());
+      if (editBlend) form.append("blendFile", editBlend);
+      if (editThumb) form.append("thumbnail", editThumb);
+
+      const res = await fetch(`${apiBase}/models/${id}`, { method: "PUT", body: form });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? `Update failed (${res.status})`);
+      }
+      const updated = await res.json() as ModelSummary;
+      setModel(updated);
+      setEditing(false);
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : "Unexpected error");
+    } finally {
+      setEditSaving(false);
+    }
+  }, [id, editName, editDesc, editBlend, editThumb]);
+
+  // ------------------------------------------------------------------
   // Retry a failed/stalled render.
   // ------------------------------------------------------------------
   const onRetry = useCallback(async () => {
@@ -320,45 +376,156 @@ export default function ModelPage({ params }: { params: { id: string } }) {
         </div>
 
         <div className="rounded-2xl border border-border bg-bg-card/80 backdrop-blur-sm p-8 shadow-2xl">
-          {/* Model info */}
+          {/* Model info / edit form */}
           {model && (
-            <div className="mb-6 flex items-start gap-5">
-              <div className="h-20 w-20 shrink-0 rounded-xl overflow-hidden bg-black/30 flex items-center justify-center">
-                {model.thumbnailUrl ? (
-                  <img
-                    src={`${apiBase}${model.thumbnailUrl}`}
-                    alt={model.name}
-                    className="h-full w-full object-cover"
+            editing ? (
+              <form onSubmit={onSaveEdit} className="mb-6 space-y-4 animate-fade-in">
+                <div className="flex items-center justify-between mb-1">
+                  <h2 className="text-sm font-medium text-text-secondary uppercase tracking-widest">Edit model</h2>
+                </div>
+
+                {/* Name */}
+                <div>
+                  <label className="block text-xs text-text-muted mb-1.5 uppercase tracking-widest">Name *</label>
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    className="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
                   />
-                ) : (
-                  <svg className="h-8 w-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                  </svg>
+                </div>
+
+                {/* Description */}
+                <div>
+                  <label className="block text-xs text-text-muted mb-1.5 uppercase tracking-widest">Description</label>
+                  <input
+                    type="text"
+                    value={editDesc}
+                    onChange={(e) => setEditDesc(e.target.value)}
+                    placeholder="Optional"
+                    className="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
+                  />
+                </div>
+
+                {/* Blend file */}
+                <div>
+                  <label className="block text-xs text-text-muted mb-1.5 uppercase tracking-widest">.blend File</label>
+                  <label className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors ${editBlend ? "border-accent bg-accent/5" : "border-border bg-black/30 hover:border-accent/40"}` }>
+                    <svg className="h-4 w-4 shrink-0 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                    </svg>
+                    <span className="text-sm text-text-secondary truncate">
+                      {editBlend ? editBlend.name : "Keep current file"}
+                    </span>
+                    <input
+                      type="file"
+                      accept=".blend"
+                      className="sr-only"
+                      onChange={(e) => setEditBlend(e.target.files?.[0] ?? null)}
+                    />
+                  </label>
+                </div>
+
+                {/* Thumbnail */}
+                <div>
+                  <label className="block text-xs text-text-muted mb-1.5 uppercase tracking-widest">Preview Image</label>
+                  <label className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors ${editThumb ? "border-accent bg-accent/5" : "border-border bg-black/30 hover:border-accent/40"}`}>
+                    {!editThumb && model.thumbnailUrl ? (
+                      <img
+                        src={`${apiBase}${model.thumbnailUrl}`}
+                        alt=""
+                        className="h-6 w-6 rounded object-cover shrink-0"
+                      />
+                    ) : (
+                      <svg className="h-4 w-4 shrink-0 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                      </svg>
+                    )}
+                    <span className="text-sm text-text-secondary truncate">
+                      {editThumb ? editThumb.name : "Keep current image"}
+                    </span>
+                    <input
+                      type="file"
+                      accept=".png,.jpg,.jpeg"
+                      className="sr-only"
+                      onChange={(e) => setEditThumb(e.target.files?.[0] ?? null)}
+                    />
+                  </label>
+                </div>
+
+                {editError && (
+                  <p className="text-sm text-danger animate-fade-in">{editError}</p>
                 )}
-              </div>
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h1 className="text-xl font-semibold text-text-primary">{model.name}</h1>
-                  {model.gltfReady ? (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
-                      <span className="h-1.5 w-1.5 rounded-full bg-success" />
-                      3D ready
-                    </span>
+
+                <div className="flex gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setEditing(false)}
+                    disabled={editSaving}
+                    className="flex-1 flex items-center justify-center rounded-xl border border-border px-4 py-2.5 text-sm text-text-secondary hover:border-accent/40 transition-colors disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={editSaving}
+                    className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-sm font-medium text-white hover:bg-accent-light transition-colors disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {editSaving ? <><Spinner /><span>Saving…</span></> : "Save"}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="mb-6 flex items-start gap-5">
+                <div className="h-20 w-20 shrink-0 rounded-xl overflow-hidden bg-black/30 flex items-center justify-center">
+                  {model.thumbnailUrl ? (
+                    <img
+                      src={`${apiBase}${model.thumbnailUrl}`}
+                      alt={model.name}
+                      className="h-full w-full object-cover"
+                    />
                   ) : (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-medium text-warning">
-                      <span className="h-1.5 w-1.5 rounded-full bg-warning animate-pulse" />
-                      Converting…
-                    </span>
+                    <svg className="h-8 w-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                    </svg>
                   )}
                 </div>
-                {model.description && (
-                  <p className="mt-1 text-sm text-text-secondary">{model.description}</p>
-                )}
-                <p className="mt-1.5 text-xs text-text-muted font-mono">
-                  Added {new Date(model.createdAt).toLocaleDateString()}
-                </p>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h1 className="text-xl font-semibold text-text-primary">{model.name}</h1>
+                    {model.gltfReady ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
+                        <span className="h-1.5 w-1.5 rounded-full bg-success" />
+                        3D ready
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-medium text-warning">
+                        <span className="h-1.5 w-1.5 rounded-full bg-warning animate-pulse" />
+                        Converting…
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={onOpenEdit}
+                      disabled={hasActiveRender}
+                      title="Edit model"
+                      className="ml-auto flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs text-text-muted hover:border-accent/50 hover:text-text-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                      </svg>
+                      Edit
+                    </button>
+                  </div>
+                  {model.description && (
+                    <p className="mt-1 text-sm text-text-secondary">{model.description}</p>
+                  )}
+                  <p className="mt-1.5 text-xs text-text-muted font-mono">
+                    Added {new Date(model.createdAt).toLocaleDateString()}
+                  </p>
+                </div>
               </div>
-            </div>
+            )
           )}
 
           {/* AI Enhancement toggle */}
@@ -531,7 +698,7 @@ export default function ModelPage({ params }: { params: { id: string } }) {
                         : `${apiBase}/render/${r.id}/image`
                     }
                     alt={`Render ${r.id.slice(0, 8)}`}
-                    className="aspect-[4/3] w-full object-cover bg-black/30"
+                    className="aspect-4/3 w-full object-cover bg-black/30"
                   />
                   <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5">
                     <p className="font-mono text-[10px] text-white/70 truncate">
