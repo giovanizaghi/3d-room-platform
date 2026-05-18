@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   RenderStatus,
   ACTIVE_RENDER_STATUSES,
@@ -53,6 +54,7 @@ function ProgressBar({ progress }: { progress: number }) {
 
 export default function ModelPage({ params }: { params: { id: string } }) {
   const { id } = params;
+  const router = useRouter();
   const { addOptimistic, open: openQueue, hydrateRender, items } = useRenderQueue();
 
   const [model, setModel] = useState<ModelSummary | null>(null);
@@ -69,6 +71,10 @@ export default function ModelPage({ params }: { params: { id: string } }) {
   const [editThumb, setEditThumb] = useState<File | null>(null);
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+
+  // Delete model state
+  const [deleteConfirming, setDeleteConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // ID of the render we're tracking on this page (set by submit or by mount recovery).
   const [currentRenderId, setCurrentRenderId] = useState<string | null>(null);
@@ -246,6 +252,24 @@ export default function ModelPage({ params }: { params: { id: string } }) {
   }, [id, aiEnhance, model, addOptimistic, openQueue]);
 
   // ------------------------------------------------------------------
+  // Delete model.
+  // ------------------------------------------------------------------
+  const onDelete = useCallback(async () => {
+    setDeleting(true);
+    try {
+      const res = await fetch(`${apiBase}/models/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? `Delete failed (${res.status})`);
+      }
+      router.push("/");
+    } catch {
+      setDeleting(false);
+      setDeleteConfirming(false);
+    }
+  }, [id, router]);
+
+  // ------------------------------------------------------------------
   // Open edit form — pre-fill with current model values.
   // ------------------------------------------------------------------
   const onOpenEdit = useCallback(() => {
@@ -336,6 +360,7 @@ export default function ModelPage({ params }: { params: { id: string } }) {
     : null;
 
   return (
+    <>
     <main className="min-h-screen p-8">
       {/* Ambient background */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
@@ -344,16 +369,31 @@ export default function ModelPage({ params }: { params: { id: string } }) {
       </div>
 
       <div className="relative mx-auto max-w-2xl animate-slide-up space-y-4">
-        {/* Back link */}
-        <Link
-          href="/"
-          className="inline-flex items-center gap-1.5 text-sm text-text-muted hover:text-text-secondary transition-colors"
-        >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-          </svg>
-          All models
-        </Link>
+        {/* Back link + delete button */}
+        <div className="flex items-center justify-between">
+          <Link
+            href="/"
+            className="inline-flex items-center gap-1.5 text-sm text-text-muted hover:text-text-secondary transition-colors"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+            </svg>
+            All models
+          </Link>
+          {model && (
+            <button
+              type="button"
+              onClick={() => setDeleteConfirming(true)}
+              disabled={deleting}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-danger/30 px-3 py-1.5 text-xs font-medium text-danger hover:bg-danger/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              Delete model
+            </button>
+          )}
+        </div>
 
         {/* 3D Viewer */}
         <div className="rounded-2xl border border-border bg-bg-card/80 backdrop-blur-sm overflow-hidden shadow-2xl">
@@ -750,6 +790,49 @@ export default function ModelPage({ params }: { params: { id: string } }) {
         )}
       </div>
     </main>
+
+    {/* Delete confirmation modal */}
+    {deleteConfirming && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => !deleting && setDeleteConfirming(false)} />
+        <div className="relative w-full max-w-sm rounded-2xl border border-border bg-bg-card p-6 shadow-2xl animate-slide-up">
+          <div className="mb-4 flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-danger/15">
+              <svg className="h-5 w-5 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-text-primary">Delete model?</h2>
+              <p className="text-xs text-text-muted">{model?.name}</p>
+            </div>
+          </div>
+          <p className="mb-6 text-sm text-text-secondary">
+            This will permanently delete the 3D model and <strong className="text-text-primary">all its renders</strong>, including output images. This action cannot be undone.
+          </p>
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={() => setDeleteConfirming(false)}
+              disabled={deleting}
+              className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm text-text-secondary hover:border-accent/40 transition-colors disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={onDelete}
+              disabled={deleting}
+              className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-danger px-4 py-2.5 text-sm font-medium text-white hover:opacity-90 transition-opacity disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {deleting ? <><Spinner /><span>Deleting…</span></> : "Delete"}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
+
 

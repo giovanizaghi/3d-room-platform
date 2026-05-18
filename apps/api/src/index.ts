@@ -574,6 +574,51 @@ app.get("/models/:id/gltf", async (req, res) => {
 
 // POST /models/:id/convert — re-queues a GLB conversion job for an existing model.
 // Useful when the automatic conversion failed or the GLB is missing.
+// DELETE /models/:id — hard-deletes the model, all its render records, and
+// associated local files (blend, thumbnail, GLB, render images).
+app.delete("/models/:id", async (req, res) => {
+  const modelId = req.params.id as string;
+  const model = await prisma.model3D.findUnique({
+    where: { id: modelId },
+    include: { renders: { select: { id: true, imageUrl: true } } },
+  });
+  if (!model) return res.status(404).json({ error: "model not found" });
+
+  // Collect local file paths to clean up after DB deletion.
+  const localFilesToRemove: string[] = [];
+
+  const addLocalFile = (p: string | null | undefined) => {
+    if (p && !p.startsWith("http") && !isStorageKey(p)) localFilesToRemove.push(p);
+  };
+
+  addLocalFile(model.blendFilePath);
+  addLocalFile(model.thumbnailPath);
+  addLocalFile(model.gltfFilePath);
+
+  for (const render of model.renders) {
+    addLocalFile(render.imageUrl);
+    // Render images may also live on disk by render ID even when imageUrl is null/relative.
+    localFilesToRemove.push(resolve(outputDir, `${render.id}.png`));
+  }
+
+  // Delete renders first (FK constraint), then the model.
+  await prisma.$transaction([
+    prisma.render.deleteMany({ where: { modelId } }),
+    prisma.model3D.delete({ where: { id: modelId } }),
+  ]);
+
+  console.log(JSON.stringify({ event: "model_deleted", modelId, renderCount: model.renders.length }));
+
+  // Best-effort cleanup of local files — non-fatal if missing.
+  const modelDir = resolve(modelsDir, modelId);
+  await rm(modelDir, { recursive: true, force: true }).catch(() => {});
+  for (const filePath of localFilesToRemove) {
+    await rm(filePath, { force: true }).catch(() => {});
+  }
+
+  return res.status(200).json({ deleted: true });
+});
+
 app.post("/models/:id/convert", async (req, res) => {
   const model = await prisma.model3D.findUnique({ where: { id: req.params.id }, select: { id: true } });
   if (!model) return res.status(404).json({ error: "model not found" });
