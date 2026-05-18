@@ -2,17 +2,20 @@
 
 import { useRef, useState } from "react";
 import Link from "next/link";
-import { RoomScene, type ObjectType, type ToolMode } from "./RoomScene";
+import { RoomScene, type ObjectType, type ToolMode, type WallId, type CameraPreset } from "./RoomScene";
 import { ObjectPanel } from "./ObjectPanel";
 
 export default function RoomsPage() {
   const [inputSize, setInputSize]   = useState(5);
   const [activeSize, setActiveSize] = useState<number | null>(null);
-  const [tool, setTool]             = useState<ToolMode>("translate");
-  const [hasSelection, setHasSelection] = useState(false);
+  const [tool, setTool]                 = useState<ToolMode>("translate");
+  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [selectedWall, setSelectedWall] = useState<WallId | null>(null);
+  const [cameraLabel, setCameraLabel]   = useState("Perspective");
 
-  const addObjectRef    = useRef<((type: ObjectType) => void) | null>(null);
-  const deleteSelectedRef = useRef<(() => void) | null>(null);
+  const addObjectRef        = useRef<((type: ObjectType) => void) | null>(null);
+  const deleteSelectedRef   = useRef<(() => void) | null>(null);
+  const setCameraPresetRef  = useRef<((preset: CameraPreset) => void) | null>(null);
 
   const handleGenerate = () => {
     setActiveSize(inputSize);
@@ -95,7 +98,7 @@ export default function RoomsPage() {
           >
             {/* Object panel sidebar */}
             <div className="w-36 shrink-0">
-              <ObjectPanel onAdd={(type) => addObjectRef.current?.(type)} />
+              <ObjectPanel onAdd={(type) => addObjectRef.current?.(type)} selectedWall={selectedWall} />
             </div>
 
             {/* Canvas area */}
@@ -143,10 +146,10 @@ export default function RoomsPage() {
                 {/* Delete — only visible when something is selected */}
                 <button
                   onClick={() => deleteSelectedRef.current?.()}
-                  disabled={!hasSelection}
+                  disabled={!selectedName}
                   title="Delete selected"
                   className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-150 ${
-                    hasSelection
+                    selectedName
                       ? "text-red-400 hover:text-red-300 hover:bg-red-500/10"
                       : "text-text-muted/30 cursor-not-allowed"
                   }`}
@@ -162,15 +165,57 @@ export default function RoomsPage() {
                 </div>
               </div>
 
-              {/* 3D canvas */}
-              <div className="flex-1 rounded-2xl border border-border overflow-hidden min-h-0">
+              {/* 3D canvas + overlays */}
+              <div className="relative flex-1 rounded-2xl border border-border overflow-hidden min-h-0">
+
                 <RoomScene
                   size={activeSize}
                   tool={tool}
                   addObjectRef={addObjectRef}
                   deleteSelectedRef={deleteSelectedRef}
-                  onSelectionChange={setHasSelection}
+                  setCameraPresetRef={setCameraPresetRef}
+                  onSelectionChange={setSelectedName}
+                  onWallSelect={setSelectedWall}
+                  onCameraChange={setCameraLabel}
                 />
+
+                {/* Top-left: selected object name */}
+                <div className="pointer-events-none absolute top-2.5 left-3 flex items-center gap-1.5">
+                  {(selectedName || selectedWall) ? (
+                    <span className="rounded-lg bg-black/55 backdrop-blur-sm px-2.5 py-1 text-xs font-medium text-white/90 select-none">
+                      {selectedName
+                        ? selectedName.charAt(0).toUpperCase() + selectedName.slice(1)
+                        : `Wall: ${selectedWall}`}
+                    </span>
+                  ) : null}
+                </div>
+
+                {/* Top-right: camera label + preset buttons */}
+                <div className="absolute top-2.5 right-3 flex items-center gap-1">
+                  {/* Current view label (Blender-style) */}
+                  <span className="rounded-lg bg-black/55 backdrop-blur-sm px-2.5 py-1 text-[11px] font-semibold text-white/90 select-none mr-1">
+                    {cameraLabel}
+                  </span>
+                  <div className="w-px h-4 bg-white/20 mx-0.5" />
+                  {(["perspective", "top", "front", "left", "right"] as CameraPreset[]).map((p) => {
+                    const label = p === "perspective" ? "Persp" : p.charAt(0).toUpperCase() + p.slice(1);
+                    const active = cameraLabel.toLowerCase() === (p === "perspective" ? "perspective" : p);
+                    return (
+                      <button
+                        key={p}
+                        onClick={() => setCameraPresetRef.current?.(p)}
+                        className={`rounded-lg px-2 py-1 text-[11px] font-medium transition-colors select-none ${
+                          active
+                            ? "bg-white/20 text-white"
+                            : "bg-black/55 backdrop-blur-sm text-white/60 hover:text-white hover:bg-black/75"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+
               </div>
             </div>
           </div>

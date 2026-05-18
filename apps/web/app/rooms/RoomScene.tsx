@@ -5,38 +5,95 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 
-export type ObjectType = "cube" | "sphere" | "cylinder";
-export type ToolMode  = "translate" | "rotate";
+export type ObjectType    = "cube" | "sphere" | "cylinder" | "frame" | "window" | "door";
+export type WallId        = "front" | "back" | "left" | "right";
+export type ToolMode      = "translate" | "rotate";
+export type CameraPreset  = "perspective" | "top" | "front" | "left" | "right";
 
 export interface RoomSceneProps {
   size: number;
   tool: ToolMode;
-  addObjectRef:    React.MutableRefObject<((type: ObjectType) => void) | null>;
-  deleteSelectedRef: React.MutableRefObject<(() => void) | null>;
-  onSelectionChange: (selected: boolean) => void;
+  addObjectRef:         React.MutableRefObject<((type: ObjectType) => void) | null>;
+  deleteSelectedRef:    React.MutableRefObject<(() => void) | null>;
+  setCameraPresetRef:   React.MutableRefObject<((preset: CameraPreset) => void) | null>;
+  onSelectionChange:    (name: string | null) => void;
+  onWallSelect:         (wallId: WallId | null) => void;
+  onCameraChange:       (label: string) => void;
 }
 
 const WALL_HEIGHT = 2.7;
 const THICKNESS   = 0.15;
 
-// --- Primitive catalogue --------------------------------------------------
-const PALETTE: Record<ObjectType, number> = {
+// --- Floor-object catalogue -----------------------------------------------
+const PALETTE: Record<string, number> = {
   cube:     0x7b9e87,
   sphere:   0xb07b9e,
   cylinder: 0x7b8fb0,
+  // wall objects
+  frame:    0xa67c52,
+  window:   0x8ecae6,
+  door:     0x6b4c35,
 };
-const HALF_H: Record<ObjectType, number> = {
+const HALF_H: Record<string, number> = {
   cube:     0.3,
   sphere:   0.35,
   cylinder: 0.4,
 };
+
+const WALL_OBJ_DEFS: Record<string, { w: number; h: number; defaultY: number }> = {
+  frame:  { w: 0.5,  h: 0.6,  defaultY: WALL_HEIGHT * 0.6 },
+  window: { w: 1.0,  h: 1.2,  defaultY: WALL_HEIGHT * 0.5 },
+  door:   { w: 0.9,  h: 2.1,  defaultY: 2.1 / 2           },  // bottom at floor
+};
+
+const FLOOR_TYPES = new Set(["cube", "sphere", "cylinder"]);
+const WALL_TYPES  = new Set(["frame", "window", "door"]);
 
 function buildGeometry(type: ObjectType): THREE.BufferGeometry {
   switch (type) {
     case "cube":     return new THREE.BoxGeometry(0.6, 0.6, 0.6);
     case "sphere":   return new THREE.SphereGeometry(0.35, 32, 16);
     case "cylinder": return new THREE.CylinderGeometry(0.3, 0.3, 0.8, 32);
+    default:         return new THREE.BoxGeometry(0.1, 0.1, 0.1); // placeholder
   }
+}
+
+// Build an extruded wall with a rectangular cutout (for window / door).
+// `wallW` and `wallH` are the full wall interior dimensions.
+// `holes` is a list of {x, y, w, h} in local wall-face coordinates
+// (x/y = center, w/h = full extent).
+function buildWallWithHoles(
+  wallW: number,
+  wallH: number,
+  thickness: number,
+  holes: { cx: number; cy: number; w: number; h: number }[],
+): THREE.BufferGeometry {
+  const shape = new THREE.Shape();
+  const hw = wallW / 2;
+  const hh = wallH / 2;
+  shape.moveTo(-hw, -hh);
+  shape.lineTo( hw, -hh);
+  shape.lineTo( hw,  hh);
+  shape.lineTo(-hw,  hh);
+  shape.closePath();
+
+  for (const { cx, cy, w, h } of holes) {
+    const hole = new THREE.Path();
+    hole.moveTo(cx - w / 2, cy - h / 2);
+    hole.lineTo(cx + w / 2, cy - h / 2);
+    hole.lineTo(cx + w / 2, cy + h / 2);
+    hole.lineTo(cx - w / 2, cy + h / 2);
+    hole.closePath();
+    shape.holes.push(hole);
+  }
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: thickness,
+    bevelEnabled: false,
+  });
+  // Center on Z so the wall sits symmetrically (depth goes 0→thickness → shift by -thickness/2)
+  geo.translate(0, 0, -thickness / 2);
+  return geo;
 }
 
 export function RoomScene({
@@ -44,7 +101,10 @@ export function RoomScene({
   tool,
   addObjectRef,
   deleteSelectedRef,
+  setCameraPresetRef,
   onSelectionChange,
+  onWallSelect,
+  onCameraChange,
 }: RoomSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Ref so the tool-sync effect can reach into the live scene
@@ -159,6 +219,105 @@ export function RoomScene({
     ceiling.receiveShadow = true;
     scene.add(ceiling);
 
+    // Wall meshes by id — kept as refs so we can rebuild them with holes
+    type WallMeshMap = Record<WallId, THREE.Mesh>;
+
+    // Selected wall tracking
+    let selectedWall: WallId | null = null;
+    const WALL_WIRE_COLOR = new THREE.Color(0xff8800); // Blender-style orange
+    const wallWireframes: Partial<Record<WallId, THREE.LineSegments>> = {};
+
+    const attachWireframe = (wallId: WallId) => {
+      const mesh = wallMeshes[wallId];
+      const edges = new THREE.EdgesGeometry(mesh.geometry, 5);
+      const line  = new THREE.LineSegments(
+        edges,
+        new THREE.LineBasicMaterial({ color: WALL_WIRE_COLOR, linewidth: 1, depthTest: false }),
+      );
+      line.renderOrder = 10;
+      mesh.add(line);
+      wallWireframes[wallId] = line;
+    };
+
+    const detachWireframe = (wallId: WallId) => {
+      const line = wallWireframes[wallId];
+      if (line) {
+        wallMeshes[wallId].remove(line);
+        line.geometry.dispose();
+        (line.material as THREE.Material).dispose();
+        delete wallWireframes[wallId];
+      }
+    };
+
+    const setWallSelection = (wallId: WallId | null) => {
+      if (selectedWall) detachWireframe(selectedWall);
+      selectedWall = wallId;
+      if (wallId) attachWireframe(wallId);
+      onWallSelect(wallId);
+    };
+
+    const wallMeshes: WallMeshMap = {
+      front: frontWall, back: backWall, left: leftWall, right: rightWall,
+    };
+
+    // Wall inner-face world position and normal for each wall
+    const wallInfo: Record<WallId, { normal: THREE.Vector3; innerZ: number; axis: "x" | "z"; sign: 1 | -1 }> = {
+      front: { normal: new THREE.Vector3(0, 0,  1), innerZ: -half, axis: "x", sign:  1 },
+      back:  { normal: new THREE.Vector3(0, 0, -1), innerZ:  half, axis: "x", sign: -1 },
+      left:  { normal: new THREE.Vector3( 1, 0, 0), innerZ: -half, axis: "z", sign:  1 },
+      right: { normal: new THREE.Vector3(-1, 0, 0), innerZ:  half, axis: "z", sign: -1 },
+    };
+
+    // Rebuild a wall's geometry to include all cutout holes from windows/doors on it
+    const wallObjects: THREE.Mesh[] = [];  // wall-attached objects
+
+    const rebuildWall = (wallId: WallId) => {
+      const info  = wallInfo[wallId];
+      const isXWall = wallId === "front" || wallId === "back";
+      const wallW = isXWall ? size + THICKNESS * 2 : size;
+      const wallH = WALL_HEIGHT;
+
+      const objs = wallObjects.filter(o => o.userData.wallId === wallId);
+
+      // Collect holes (only window and door cut through)
+      const holes = objs
+        .filter(o => o.userData.type === "window" || o.userData.type === "door")
+        .map(o => {
+          const def = WALL_OBJ_DEFS[o.userData.type as string];
+          // The shape is built in XY plane, then for Z-walls rotated by rotation.y = π/2.
+          // That rotation maps shape local +X → world -Z, so we negate Z-wall positions
+          // to keep the hole aligned with the mesh instead of mirrored.
+          const localX = isXWall ? o.userData.wallLocal.x : -o.userData.wallLocal.z;
+          const localY = o.position.y - WALL_HEIGHT / 2;
+          return { cx: localX, cy: localY, w: def.w, h: def.h };
+        });
+
+      const oldMesh = wallMeshes[wallId];
+      const geo = buildWallWithHoles(wallW, wallH, THICKNESS, holes);
+      const newMesh = new THREE.Mesh(geo, (oldMesh.material as THREE.MeshStandardMaterial).clone());
+      newMesh.position.copy(oldMesh.position);
+      // ExtrudeGeometry extrudes along local Z. Front/back walls are already Z-facing
+      // (no rotation needed). Left/right walls face along X, so rotate 90° around Y.
+      if (!isXWall) newMesh.rotation.y = Math.PI / 2;
+      newMesh.castShadow    = true;
+      newMesh.receiveShadow = true;
+      newMesh.userData      = { ...oldMesh.userData, isWall: true, wallId };
+      scene.remove(oldMesh);
+      scene.add(newMesh);
+      wallMeshes[wallId] = newMesh;
+
+      // Re-attach wireframe overlay if this wall is currently selected
+      if (selectedWall === wallId) {
+        // The old mesh was removed; the old LineSegments was a child of it, already gone.
+        // Delete the stale reference and attach a fresh one to the new mesh.
+        delete wallWireframes[wallId];
+        attachWireframe(wallId);
+      }
+
+      // Keep wall-object visibility in sync
+      objs.forEach(o => { o.visible = newMesh.visible; });
+    };
+
     // ---- OrbitControls ---------------------------------------------------
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0, WALL_HEIGHT * 0.3, 0);
@@ -171,66 +330,194 @@ export function RoomScene({
     controls.maxPolarAngle = Math.PI * 0.58;
     controls.update();
 
+    // ---- Camera preset API -----------------------------------------------
+    const TARGET = new THREE.Vector3(0, WALL_HEIGHT * 0.3, 0);
+
+    // Snap tolerance: position must be within this fraction of size to be considered a preset
+    const PRESET_SNAPS: Array<{ label: string; pos: THREE.Vector3 }> = [
+      { label: "Perspective", pos: new THREE.Vector3( size * 0.9,  size * 0.6,  size * 0.9) },
+      { label: "Top",         pos: new THREE.Vector3( 0,           size * 2.5,  0.001)       },
+      { label: "Front",       pos: new THREE.Vector3( 0,           size * 0.5,  size * 1.8)  },
+      { label: "Left",        pos: new THREE.Vector3(-size * 1.8,  size * 0.5,  0)           },
+      { label: "Right",       pos: new THREE.Vector3( size * 1.8,  size * 0.5,  0)           },
+    ];
+
+    let lastCameraLabel = "Perspective";
+
+    const detectCameraLabel = () => {
+      const p = camera.position;
+      const threshold = size * 0.25;
+      for (const snap of PRESET_SNAPS) {
+        if (p.distanceTo(snap.pos) < threshold) return snap.label;
+      }
+      return "User Perspective";
+    };
+
+    setCameraPresetRef.current = (preset: CameraPreset) => {
+      controls.target.copy(TARGET);
+      const snap = PRESET_SNAPS[["perspective","top","front","left","right"].indexOf(preset)];
+      camera.position.copy(snap.pos);
+      controls.update();
+      lastCameraLabel = snap.label;
+      onCameraChange(snap.label);
+    };
+
+    // Detect user orbit and update label
+    controls.addEventListener("change", () => {
+      const label = detectCameraLabel();
+      if (label !== lastCameraLabel) {
+        lastCameraLabel = label;
+        onCameraChange(label);
+      }
+    });
+
+    // Fire initial label
+    onCameraChange("Perspective");
+
     // ---- Furniture tracking ----------------------------------------------
     const furniture: THREE.Mesh[] = [];
     let selected: THREE.Mesh | null = null;
 
-    const EMISSIVE_SEL   = new THREE.Color(0x2255cc);
-    const EMISSIVE_NONE  = new THREE.Color(0x000000);
+    const EMISSIVE_SEL  = new THREE.Color(0x2255cc);
+    const EMISSIVE_NONE = new THREE.Color(0x000000);
 
-    // ---- Surface snap ----------------------------------------------------
-    // Casts a ray straight down from above the object and lands on the floor
-    // or the top face of any other furniture piece below it.
+    // ---- Surface snap (floor objects) ------------------------------------
     const snapToSurface = (mesh: THREE.Mesh) => {
       const halfH = mesh.userData.halfHeight as number;
       const ray = new THREE.Raycaster(
         new THREE.Vector3(mesh.position.x, WALL_HEIGHT + 1, mesh.position.z),
         new THREE.Vector3(0, -1, 0),
       );
-      const targets = [floor, ...furniture.filter(f => f !== mesh)];
+      const targets = [floor, ...furniture.filter(f => f !== mesh && !f.userData.isWallObject)];
       const hits = ray.intersectObjects(targets, false);
       mesh.position.y = hits.length > 0 ? hits[0].point.y + halfH : halfH;
     };
 
+    // ---- Wall-object placement ------------------------------------------
+    // (nearestWall removed — wall objects are placed on selectedWall only)
+
+    // Place a wall object onto a specific wall, centered horizontally
+    const placeOnWall = (mesh: THREE.Mesh, wallId: WallId) => {
+      const info   = wallInfo[wallId];
+      const isXWall = wallId === "front" || wallId === "back";
+      const def    = WALL_OBJ_DEFS[mesh.userData.type as string];
+      const offset = info.sign * (isXWall ? THICKNESS / 2 : THICKNESS / 2);
+
+      mesh.userData.wallId    = wallId;
+      mesh.userData.isWallObject = true;
+
+      if (wallId === "front" || wallId === "back") {
+        mesh.position.set(0, def.defaultY, info.innerZ + offset);
+        mesh.rotation.set(0, 0, 0);
+        mesh.userData.wallLocal = { x: 0, z: 0 };
+      } else {
+        mesh.position.set(info.innerZ + offset, def.defaultY, 0);
+        mesh.rotation.set(0, Math.PI / 2, 0);
+        mesh.userData.wallLocal = { x: 0, z: 0 };
+      }
+    };
+
+    // Keep wall-local position cached for hole calculations
+    const syncWallLocal = (mesh: THREE.Mesh) => {
+      const wallId  = mesh.userData.wallId as WallId;
+      const isXWall = wallId === "front" || wallId === "back";
+      mesh.userData.wallLocal = isXWall
+        ? { x: mesh.position.x, z: 0 }
+        : { x: 0, z: mesh.position.z };
+    };
+
     // ---- TransformControls -----------------------------------------------
     const tc = new TransformControls(camera, renderer.domElement);
-    // Show all 3 axes in both modes — same as Blender.
-    // For translate: Y movement is overridden by surface snap anyway.
-    // For rotate: all 3 rings visible; Y is the most useful for furniture.
+    const tcHelper = tc.getHelper();
     tc.size = 1.2;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    scene.add(tc as any);
+    scene.add(tcHelper);
 
     let currentTool: ToolMode = tool;
 
-    const applyTool = (mode: ToolMode) => {
+    const applyTool = (mode: ToolMode, mesh?: THREE.Mesh | null) => {
       currentTool = mode;
       tc.setMode(mode);
-      tc.showX = true;
-      tc.showY = true;
-      tc.showZ = true;
+
+      const target = mesh ?? selected;
+      if (target?.userData.isWallObject) {
+        // Wall objects: constrain to slide along the wall only
+        const wallId  = target.userData.wallId as WallId;
+        const isXWall = wallId === "front" || wallId === "back";
+        if (mode === "translate") {
+          // X-walls: slide X (lateral) + Y (height); Z is locked (stays on wall)
+          // Z-walls: slide Z (lateral) + Y (height); X is locked
+          tc.showX = isXWall;
+          tc.showY = true;
+          tc.showZ = !isXWall;
+        } else {
+          tc.showX = false; tc.showY = true; tc.showZ = false;
+        }
+      } else {
+        tc.showX = true; tc.showY = true; tc.showZ = true;
+      }
     };
 
     applyTool(tool);
     applyToolRef.current = applyTool;
 
-    // Disable orbit while dragging gizmo; track drag-end to skip next click
+    // Disable orbit while dragging gizmo
     let justDragged = false;
     tc.addEventListener("dragging-changed", (e) => {
       controls.enabled = !(e as unknown as { value: boolean }).value;
       if (!(e as unknown as { value: boolean }).value) {
         justDragged = true;
-        // clear on next microtask so the pointerup fires first
         Promise.resolve().then(() => { justDragged = false; });
       }
     });
 
-    // Re-snap during translate drag so object glides along the surface
     tc.addEventListener("objectChange", () => {
-      if (selected && currentTool === "translate") snapToSurface(selected);
+      if (!selected) return;
+      if (selected.userData.isWallObject) {
+        // Lock the axis perpendicular to the wall
+        const wallId  = selected.userData.wallId as WallId;
+        const isXWall = wallId === "front" || wallId === "back";
+        const info    = wallInfo[wallId];
+        const offset  = info.sign * THICKNESS / 2;
+        if (isXWall) {
+          selected.position.z = info.innerZ + offset;
+        } else {
+          selected.position.x = info.innerZ + offset;
+        }
+        // Clamp Y
+        const def = WALL_OBJ_DEFS[selected.userData.type as string];
+        selected.position.y = Math.max(def.h / 2, Math.min(WALL_HEIGHT - def.h / 2, selected.position.y));
+        // Update local cache and rebuild the wall with new hole position
+        syncWallLocal(selected);
+        rebuildWall(wallId);
+      } else if (currentTool === "translate") {
+        snapToSurface(selected);
+      }
     });
 
-    // ---- Selection highlight ---------------------------------------------
+    // ---- Selection highlight + axis setup --------------------------------
+    const OBJ_WIRE_COLOR = new THREE.Color(0xff8800);
+    let selectionWireframe: THREE.LineSegments | null = null;
+
+    const attachObjectWireframe = (mesh: THREE.Mesh) => {
+      const edges = new THREE.EdgesGeometry(mesh.geometry, 5);
+      const line  = new THREE.LineSegments(
+        edges,
+        new THREE.LineBasicMaterial({ color: OBJ_WIRE_COLOR, linewidth: 1, depthTest: false }),
+      );
+      line.renderOrder = 10;
+      mesh.add(line);
+      selectionWireframe = line;
+    };
+
+    const detachObjectWireframe = (mesh: THREE.Mesh) => {
+      if (selectionWireframe) {
+        mesh.remove(selectionWireframe);
+        selectionWireframe.geometry.dispose();
+        (selectionWireframe.material as THREE.Material).dispose();
+        selectionWireframe = null;
+      }
+    };
+
     const setSelection = (mesh: THREE.Mesh | null) => {
       if (selected === mesh) return;
 
@@ -238,6 +525,7 @@ export function RoomScene({
         const mat = selected.material as THREE.MeshStandardMaterial;
         mat.emissive.copy(EMISSIVE_NONE);
         mat.emissiveIntensity = 0;
+        detachObjectWireframe(selected);
         tc.detach();
       }
 
@@ -246,33 +534,66 @@ export function RoomScene({
       if (mesh) {
         const mat = mesh.material as THREE.MeshStandardMaterial;
         mat.emissive.copy(EMISSIVE_SEL);
-        mat.emissiveIntensity = 0.35;
+        mat.emissiveIntensity = 0.2;
+        attachObjectWireframe(mesh);
         tc.attach(mesh);
-        applyTool(currentTool); // re-apply axis visibility after attach
+        applyTool(currentTool, mesh);
       }
 
-      onSelectionChange(mesh !== null);
+      onSelectionChange(mesh ? (mesh.userData.type as string) : null);
     };
 
-    // ---- Add object API (called from sidebar) ----------------------------
+    // ---- Add object API --------------------------------------------------
     addObjectRef.current = (type: ObjectType) => {
-      const mesh = new THREE.Mesh(
-        buildGeometry(type),
-        new THREE.MeshStandardMaterial({
+      if (FLOOR_TYPES.has(type)) {
+        const mesh = new THREE.Mesh(
+          buildGeometry(type),
+          new THREE.MeshStandardMaterial({ color: PALETTE[type], roughness: 0.7, metalness: 0.05 }),
+        );
+        mesh.userData.isFurniture = true;
+        mesh.userData.halfHeight  = HALF_H[type];
+        mesh.userData.type        = type;
+        mesh.castShadow    = true;
+        mesh.receiveShadow = true;
+        mesh.position.set(0, 0, 0);
+        scene.add(mesh);
+        furniture.push(mesh);
+        snapToSurface(mesh);
+        setSelection(mesh);
+        return;
+      }
+
+      if (WALL_TYPES.has(type)) {
+        if (!selectedWall) return; // guarded in UI but safety check here too
+        const def = WALL_OBJ_DEFS[type];
+        const geo = new THREE.BoxGeometry(def.w, def.h, THICKNESS);
+        const mat = new THREE.MeshStandardMaterial({
           color: PALETTE[type],
-          roughness: 0.7,
+          roughness: 0.5,
           metalness: 0.05,
-        }),
-      );
-      mesh.userData.isFurniture = true;
-      mesh.userData.halfHeight  = HALF_H[type];
-      mesh.castShadow    = true;
-      mesh.receiveShadow = true;
-      mesh.position.set(0, 0, 0);
-      scene.add(mesh);
-      furniture.push(mesh);
-      snapToSurface(mesh);
-      setSelection(mesh); // auto-select new object
+          polygonOffset: true,
+          polygonOffsetFactor: -2,
+          polygonOffsetUnits: -2,
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.renderOrder = 1;
+        mesh.userData.type = type;
+        mesh.castShadow    = true;
+        mesh.receiveShadow = true;
+
+        const wallId = selectedWall;
+        placeOnWall(mesh, wallId);
+        scene.add(mesh);
+        wallObjects.push(mesh);
+        furniture.push(mesh);  // also raycasted for selection
+
+        if (type === "window" || type === "door") {
+          syncWallLocal(mesh);
+          rebuildWall(wallId);
+        }
+
+        setSelection(mesh);
+      }
     };
 
     // ---- Delete API ------------------------------------------------------
@@ -280,9 +601,21 @@ export function RoomScene({
       if (!selected) return;
       tc.detach();
       scene.remove(selected);
-      furniture.splice(furniture.indexOf(selected), 1);
+
+      const fi = furniture.indexOf(selected);
+      if (fi !== -1) furniture.splice(fi, 1);
+
+      const wi = wallObjects.indexOf(selected);
+      if (wi !== -1) {
+        const wallId = selected.userData.wallId as WallId;
+        wallObjects.splice(wi, 1);
+        if (selected.userData.type === "window" || selected.userData.type === "door") {
+          rebuildWall(wallId);
+        }
+      }
+
       selected = null;
-      onSelectionChange(false);
+      onSelectionChange(null);
     };
 
     // ---- Pointer-based click selection -----------------------------------
@@ -293,15 +626,40 @@ export function RoomScene({
       if (justDragged) return;
       if (Math.hypot(e.clientX - pdX, e.clientY - pdY) > 6) return;
 
-      const rect   = renderer.domElement.getBoundingClientRect();
-      const mouse  = new THREE.Vector2(
+      const rect  = renderer.domElement.getBoundingClientRect();
+      const mouse = new THREE.Vector2(
         ((e.clientX - rect.left) / rect.width)  *  2 - 1,
         ((e.clientY - rect.top)  / rect.height) * -2 + 1,
       );
       const ray = new THREE.Raycaster();
       ray.setFromCamera(mouse, camera);
-      const hits = ray.intersectObjects(furniture, false);
-      setSelection(hits.length > 0 ? hits[0].object as THREE.Mesh : null);
+
+      // 1. Check furniture first (higher priority)
+      const furnitureHits = ray.intersectObjects(furniture, false);
+      if (furnitureHits.length > 0) {
+        setWallSelection(null);       // clicking a furniture item clears wall selection
+        setSelection(furnitureHits[0].object as THREE.Mesh);
+        return;
+      }
+
+      // 2. Check visible walls
+      const visibleWalls = (Object.entries(wallMeshes) as [WallId, THREE.Mesh][])
+        .filter(([, m]) => m.visible)
+        .map(([, m]) => m);
+      const wallHits = ray.intersectObjects(visibleWalls, false);
+      if (wallHits.length > 0) {
+        setSelection(null);           // deselect any furniture
+        const hitMesh = wallHits[0].object as THREE.Mesh;
+        const hitId   = (Object.entries(wallMeshes) as [WallId, THREE.Mesh][])
+          .find(([, m]) => m === hitMesh)?.[0] ?? null;
+        // Toggle: clicking the same wall again deselects it
+        setWallSelection(hitId === selectedWall ? null : hitId);
+        return;
+      }
+
+      // 3. Click on empty space — clear both
+      setSelection(null);
+      setWallSelection(null);
     };
 
     renderer.domElement.addEventListener("pointerdown", onPointerDown);
@@ -309,18 +667,26 @@ export function RoomScene({
 
     // ---- ESC to deselect -------------------------------------------------
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setSelection(null);
+      if (e.key === "Escape") { setSelection(null); setWallSelection(null); }
     };
     window.addEventListener("keydown", onKeyDown);
 
-    // ---- Wall hiding (Sims-style) ----------------------------------------
+    // ---- Wall hiding (Sims-style) + wall-object visibility sync ----------
     const updateWalls = () => {
       const cx = camera.position.x;
       const cz = camera.position.z;
-      frontWall.visible = cz >= 0;
-      backWall.visible  = cz <= 0;
-      leftWall.visible  = cx >= 0;
-      rightWall.visible = cx <= 0;
+      const vis: Record<WallId, boolean> = {
+        front: cz >= 0,
+        back:  cz <= 0,
+        left:  cx >= 0,
+        right: cx <= 0,
+      };
+      (Object.keys(vis) as WallId[]).forEach(id => {
+        wallMeshes[id].visible = vis[id];
+        wallObjects
+          .filter(o => o.userData.wallId === id)
+          .forEach(o => { o.visible = vis[id]; });
+      });
     };
 
     // ---- Animation loop --------------------------------------------------
@@ -349,9 +715,10 @@ export function RoomScene({
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       renderer.domElement.removeEventListener("pointerup",   onPointerUp);
       window.removeEventListener("keydown", onKeyDown);
-      addObjectRef.current    = null;
+      addObjectRef.current      = null;
       deleteSelectedRef.current = null;
-      applyToolRef.current    = null;
+      setCameraPresetRef.current = null;
+      applyToolRef.current      = null;
       tc.dispose();
       controls.dispose();
       renderer.dispose();
