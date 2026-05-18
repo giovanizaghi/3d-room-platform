@@ -34,8 +34,16 @@ def render_scene(output_path: str, use_eevee: bool = False) -> None:
     scene.render.resolution_percentage = 100
 
     if use_eevee:
-        # EEVEE_NEXT is the engine name in Blender 4.x (renamed from BLENDER_EEVEE in 3.x).
-        engine = "BLENDER_EEVEE_NEXT" if bpy.app.version >= (4, 0, 0) else "BLENDER_EEVEE"
+        # EEVEE engine name changed across major versions:
+        #   < 4.0  → BLENDER_EEVEE
+        #   4.0–4.x → BLENDER_EEVEE_NEXT
+        #   5.0+   → EEVEE (renamed again)
+        if bpy.app.version >= (5, 0, 0):
+            engine = "EEVEE"
+        elif bpy.app.version >= (4, 0, 0):
+            engine = "BLENDER_EEVEE_NEXT"
+        else:
+            engine = "BLENDER_EEVEE"
         scene.render.engine = engine
         print(f"[render.py] Render engine: {engine} (fast mode for AI enhancement)")
     else:
