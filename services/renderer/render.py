@@ -25,7 +25,7 @@ def progress(pct: int, stage: str, message: str) -> None:
     print(f'PROGRESS:{json.dumps({"progress": pct, "stage": stage, "message": message})}', flush=True)
 
 
-def render_scene(output_path: str, use_eevee: bool = False) -> None:
+def render_scene(output_path: str) -> None:
     scene = bpy.context.scene
     scene.render.image_settings.file_format = "PNG"
     scene.render.filepath = output_path
@@ -33,26 +33,12 @@ def render_scene(output_path: str, use_eevee: bool = False) -> None:
     scene.render.resolution_y = 600
     scene.render.resolution_percentage = 100
 
-    if use_eevee:
-        # EEVEE engine name changed across major versions:
-        #   < 4.0  → BLENDER_EEVEE
-        #   4.0–4.x → BLENDER_EEVEE_NEXT
-        #   5.0+   → EEVEE (renamed again)
-        if bpy.app.version >= (5, 0, 0):
-            engine = "EEVEE"
-        elif bpy.app.version >= (4, 0, 0):
-            engine = "BLENDER_EEVEE_NEXT"
-        else:
-            engine = "BLENDER_EEVEE"
-        scene.render.engine = engine
-        print(f"[render.py] Render engine: {engine} (fast mode for AI enhancement)")
-    else:
-        # Force Cycles with CPU — headless containers have no GPU.
-        scene.render.engine = "CYCLES"
-        scene.cycles.device = "CPU"
-        scene.cycles.use_denoising = False
-        scene.cycles.samples = 32
-        print("[render.py] Render engine: Cycles (CPU, 32 samples, no denoising)")
+    # Always use Cycles with CPU — headless containers have no GPU.
+    scene.render.engine = "CYCLES"
+    scene.cycles.device = "CPU"
+    scene.cycles.use_denoising = False
+    scene.cycles.samples = 32
+    print("[render.py] Render engine: Cycles (CPU, 32 samples, no denoising)")
 
     # Force Standard color management — the .blend may reference view transforms
     # (e.g. "Filmic Log Encoding Base") not present in headless/CI Blender builds.
@@ -117,7 +103,7 @@ def main() -> None:
     print(f"[render.py] blend_file={blend_file}  render_id={args.render_id}  output={args.output}  ai_enhance={args.ai_enhance}")
     progress(10, "setup", "Scene loaded, starting render")
 
-    render_scene(args.output, use_eevee=args.ai_enhance)
+    render_scene(args.output)
 
     if args.ai_enhance:
         progress(75, "ai_enhance_start", "Starting AI enhancement...")

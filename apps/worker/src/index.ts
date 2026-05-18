@@ -1,4 +1,4 @@
-// updated: 2026-05-13b
+// updated: 2026-05-18 — always Cycles, AI enhance is post-process only
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { mkdirSync, statSync } from "node:fs";

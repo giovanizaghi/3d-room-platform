@@ -56,7 +56,6 @@ export default function ModelPage({ params }: { params: { id: string } }) {
   const { addOptimistic, open: openQueue, hydrateRender, items } = useRenderQueue();
 
   const [model, setModel] = useState<ModelSummary | null>(null);
-  const [aiEnhance, setAiEnhance] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gltfConverting, setGltfConverting] = useState(false);
@@ -220,7 +219,7 @@ export default function ModelPage({ params }: { params: { id: string } }) {
       const res = await fetch(`${apiBase}/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ modelId: id, aiEnhance }),
+        body: JSON.stringify({ modelId: id }),
       });
 
       if (!res.ok) {
@@ -243,7 +242,7 @@ export default function ModelPage({ params }: { params: { id: string } }) {
     } finally {
       setSubmitting(false);
     }
-  }, [id, aiEnhance, model, addOptimistic, openQueue]);
+  }, [id, model, addOptimistic, openQueue]);
 
   // ------------------------------------------------------------------
   // Open edit form — pre-fill with current model values.
@@ -558,30 +557,6 @@ export default function ModelPage({ params }: { params: { id: string } }) {
               </div>
             )
           )}
-
-          {/* AI Enhancement toggle */}
-          <div className="mb-4 flex items-center justify-between rounded-xl border border-border bg-bg-card/50 px-4 py-3">
-            <div>
-              <p className="text-sm font-medium text-text-primary">AI Enhancement</p>
-              <p className="text-xs text-text-muted mt-0.5">Uses EEVEE + OpenAI to improve the output</p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={aiEnhance}
-              onClick={() => setAiEnhance((v) => !v)}
-              disabled={!canSubmit}
-              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
-                aiEnhance ? "bg-accent" : "bg-border"
-              }`}
-            >
-              <span
-                className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-md ring-0 transition-transform duration-200 ${
-                  aiEnhance ? "translate-x-5" : "translate-x-0.5"
-                }`}
-              />
-            </button>
-          </div>
 
           {/* Generate / active render button */}
           {hasActiveRender ? (
