@@ -1,12 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
-import { RoomScene } from "./RoomScene";
+import { RoomScene, type ObjectType, type ToolMode } from "./RoomScene";
+import { ObjectPanel } from "./ObjectPanel";
 
 export default function RoomsPage() {
-  const [inputSize, setInputSize] = useState(5);
+  const [inputSize, setInputSize]   = useState(5);
   const [activeSize, setActiveSize] = useState<number | null>(null);
+  const [tool, setTool]             = useState<ToolMode>("translate");
+  const [hasSelection, setHasSelection] = useState(false);
+
+  const addObjectRef    = useRef<((type: ObjectType) => void) | null>(null);
+  const deleteSelectedRef = useRef<(() => void) | null>(null);
 
   const handleGenerate = () => {
     setActiveSize(inputSize);
@@ -81,13 +87,92 @@ export default function RoomsPage() {
           </button>
         </div>
 
-        {/* 3D canvas */}
+        {/* Editor layout: sidebar + canvas */}
         {activeSize !== null && (
           <div
-            className="rounded-2xl border border-border overflow-hidden"
-            style={{ height: "calc(100vh - 340px)", minHeight: 420 }}
+            className="flex gap-3"
+            style={{ height: "calc(100vh - 300px)", minHeight: 460 }}
           >
-            <RoomScene size={activeSize} />
+            {/* Object panel sidebar */}
+            <div className="w-36 shrink-0">
+              <ObjectPanel onAdd={(type) => addObjectRef.current?.(type)} />
+            </div>
+
+            {/* Canvas area */}
+            <div className="flex-1 flex flex-col gap-2 min-w-0">
+              {/* Toolbar */}
+              <div className="flex items-center gap-2 rounded-xl border border-border bg-bg-card px-3 py-2">
+                {/* Move tool */}
+                <button
+                  onClick={() => setTool("translate")}
+                  title="Move (T)"
+                  className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-150 ${
+                    tool === "translate"
+                      ? "bg-accent text-white"
+                      : "text-text-muted hover:text-text-primary hover:bg-bg-primary"
+                  }`}
+                >
+                  {/* Arrows icon */}
+                  <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 2v12M2 8h12M8 2L6 4m2-2l2 2M8 14l-2-2m2 2l2-2M2 8l2-2M2 8l2 2M14 8l-2-2m2 2l-2 2"/>
+                  </svg>
+                  Move
+                </button>
+
+                {/* Rotate tool */}
+                <button
+                  onClick={() => setTool("rotate")}
+                  title="Rotate (R)"
+                  className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-150 ${
+                    tool === "rotate"
+                      ? "bg-accent text-white"
+                      : "text-text-muted hover:text-text-primary hover:bg-bg-primary"
+                  }`}
+                >
+                  {/* Circular arrows icon */}
+                  <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 5A6 6 0 1 0 14 9"/>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M14 5h-2.5V2.5"/>
+                  </svg>
+                  Rotate
+                </button>
+
+                {/* Separator */}
+                <div className="h-5 w-px bg-border mx-1" />
+
+                {/* Delete — only visible when something is selected */}
+                <button
+                  onClick={() => deleteSelectedRef.current?.()}
+                  disabled={!hasSelection}
+                  title="Delete selected"
+                  className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-150 ${
+                    hasSelection
+                      ? "text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                      : "text-text-muted/30 cursor-not-allowed"
+                  }`}
+                >
+                  <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M2 4h12M5 4V2h6v2M6 7v5M10 7v5M3 4l1 9h8l1-9"/>
+                  </svg>
+                  Delete
+                </button>
+
+                <div className="ml-auto text-xs text-text-muted/50 font-mono">
+                  {activeSize}×{activeSize} m
+                </div>
+              </div>
+
+              {/* 3D canvas */}
+              <div className="flex-1 rounded-2xl border border-border overflow-hidden min-h-0">
+                <RoomScene
+                  size={activeSize}
+                  tool={tool}
+                  addObjectRef={addObjectRef}
+                  deleteSelectedRef={deleteSelectedRef}
+                  onSelectionChange={setHasSelection}
+                />
+              </div>
+            </div>
           </div>
         )}
 
