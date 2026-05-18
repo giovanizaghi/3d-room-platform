@@ -23,7 +23,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Type check
-        run: pnpm tsc --build
+        run: pnpm -r exec tsc --noEmit
 
       - name: Lint
         run: pnpm lint
