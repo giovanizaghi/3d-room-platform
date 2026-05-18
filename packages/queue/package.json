@@ -6,8 +6,14 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "scripts": {
+    "test": "vitest run"
+  },
   "dependencies": {
     "bullmq": "^5.10.4",
     "ioredis": "^5.4.1"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.6"
   }
 }

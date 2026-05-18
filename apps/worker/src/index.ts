@@ -34,7 +34,7 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
 
 mkdirSync(outputDir, { recursive: true });
 
-function buildCommand(renderId: string, items: unknown[], modelBlendFile: string, aiEnhance: boolean): { bin: string; args: string[] } {
+export function buildCommand(renderId: string, items: unknown[], modelBlendFile: string, aiEnhance: boolean): { bin: string; args: string[] } {
   const outputPath = resolve(outputDir, `${renderId}.png`);
   const itemsJson = JSON.stringify(items);
   const extraArgs = aiEnhance ? ["--ai-enhance"] : [];

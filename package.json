@@ -11,10 +11,14 @@
     "db:deploy": "pnpm --filter @repo/db db:deploy",
     "db:studio": "pnpm --filter @repo/db db:studio",
     "docker:up": "docker compose up --build",
-    "docker:down": "docker compose down -v"
+    "docker:down": "docker compose down -v",
+    "test:unit": "pnpm -r --filter='!@tests/e2e' run test",
+    "test": "pnpm test:unit"
   },
   "devDependencies": {
     "@types/node": "^22.8.7",
-    "typescript": "^5.6.3"
+    "@vitest/coverage-v8": "^4.1.6",
+    "typescript": "^5.6.3",
+    "vitest": "^4.1.6"
   }
 }
