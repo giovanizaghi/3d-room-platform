@@ -350,6 +350,12 @@ const convertWorker = new Worker<ConvertJobPayload>(
     const model = await prisma.model3D.findUnique({ where: { id: modelId } });
     if (!model) throw new Error(`Model ${modelId} not found`);
 
+    // Clear any previous conversion error now that we're retrying.
+    await prisma.model3D.update({
+      where: { id: modelId },
+      data: { gltfConversionError: null },
+    });
+
     const storedBlendPath = model.blendFilePath;
 
     // Download from S3 to a temp dir if the path is an S3 key.
@@ -437,13 +443,24 @@ const convertWorker = new Worker<ConvertJobPayload>(
   }
 );
 
-convertWorker.on("failed", (job, err) => {
+convertWorker.on("failed", async (job, err) => {
   if (!job) return;
+
+  const isLastAttempt = job.attemptsMade >= (job.opts.attempts ?? 1) - 1;
+
   console.log(JSON.stringify({
     event: "convert_job_failed",
     modelId: job.data.modelId,
     error: err.message,
     attempt: job.attemptsMade + 1,
+    isLastAttempt,
   }));
+
+  if (isLastAttempt) {
+    await prisma.model3D.update({
+      where: { id: job.data.modelId },
+      data: { gltfConversionError: err.message.slice(0, 500) },
+    }).catch(() => {});
+  }
 });
 

@@ -16,6 +16,7 @@ const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 type ModelSummary = Pick<Model3D, "id" | "name" | "description"> & {
   thumbnailUrl: string | null;
   gltfReady: boolean;
+  gltfConversionError: string | null;
   createdAt: string;
 };
 
@@ -137,6 +138,21 @@ export default function ModelPage({ params }: { params: { id: string } }) {
   }, [id]);
 
   // ------------------------------------------------------------------
+  // Poll model metadata while GLB conversion is in progress so the UI
+  // updates when it completes or fails.
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    if (!model || model.gltfReady || model.gltfConversionError) return;
+    const interval = setInterval(() => {
+      fetch(`${apiBase}/models/${id}`)
+        .then((r) => r.json())
+        .then((data: ModelSummary) => setModel(data))
+        .catch(() => {});
+    }, 4_000);
+    return () => clearInterval(interval);
+  }, [id, model?.gltfReady, model?.gltfConversionError]);
+
+  // ------------------------------------------------------------------
   // Refresh recovery: on mount check if there is an active render for
   // this model and hydrate it into the global context so loading state
   // persists across page refreshes.
@@ -180,6 +196,9 @@ export default function ModelPage({ params }: { params: { id: string } }) {
   // Trigger a (re-)conversion of the .blend to .glb.
   // ------------------------------------------------------------------
   const onTriggerConversion = useCallback(async () => {
+    // Optimistically clear any previous conversion error so the badge
+    // switches back to "Converting…" and polling resumes.
+    setModel((m) => m ? { ...m, gltfConversionError: null } : m);
     setGltfConverting(true);
     try {
       await fetch(`${apiBase}/models/${id}/convert`, { method: "POST" });
@@ -345,10 +364,17 @@ export default function ModelPage({ params }: { params: { id: string } }) {
               <svg className="h-12 w-12 text-text-muted/30" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
               </svg>
-              <div className="text-center space-y-1">
-                <p className="text-sm font-medium text-text-secondary">3D preview not available</p>
-                <p className="text-xs text-text-muted">The GLB file hasn&apos;t been generated yet</p>
-              </div>
+              {model?.gltfConversionError ? (
+                <div className="text-center space-y-1 px-6">
+                  <p className="text-sm font-medium text-danger">3D conversion failed</p>
+                  <p className="text-xs text-text-muted font-mono line-clamp-3">{model.gltfConversionError}</p>
+                </div>
+              ) : (
+                <div className="text-center space-y-1">
+                  <p className="text-sm font-medium text-text-secondary">3D preview not available</p>
+                  <p className="text-xs text-text-muted">The GLB file hasn&apos;t been generated yet</p>
+                </div>
+              )}
               <button
                 onClick={onTriggerConversion}
                 disabled={gltfConverting}
@@ -367,7 +393,7 @@ export default function ModelPage({ params }: { params: { id: string } }) {
                     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                     </svg>
-                    <span>Generate 3D Preview</span>
+                    <span>{model?.gltfConversionError ? "Retry 3D Conversion" : "Generate 3D Preview"}</span>
                   </>
                 )}
               </button>
@@ -497,6 +523,11 @@ export default function ModelPage({ params }: { params: { id: string } }) {
                       <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
                         <span className="h-1.5 w-1.5 rounded-full bg-success" />
                         3D ready
+                      </span>
+                    ) : model.gltfConversionError ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-danger/15 px-2 py-0.5 text-[11px] font-medium text-danger">
+                        <span className="h-1.5 w-1.5 rounded-full bg-danger" />
+                        Conversion failed
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-medium text-warning">
