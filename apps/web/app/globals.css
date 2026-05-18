@@ -25,6 +25,8 @@
   --animate-fade-out-up: fade-out-up 0.45s ease-in forwards;
   --animate-shimmer: shimmer 1.6s ease-in-out infinite;
   --animate-completion-flash: completion-flash 0.7s ease-out;
+  --animate-snackbar-in: snackbar-in 0.35s cubic-bezier(0.34, 1.4, 0.64, 1);
+  --animate-snackbar-out: snackbar-out 0.3s ease-in;
   --animate-badge-bounce: badge-bounce 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -74,6 +76,16 @@
   0%   { transform: scale(1); }
   50%  { transform: scale(1.4); }
   100% { transform: scale(1); }
+}
+
+@keyframes snackbar-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes snackbar-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to   { opacity: 0; transform: translateY(8px) scale(0.96); }
 }
 
 body {

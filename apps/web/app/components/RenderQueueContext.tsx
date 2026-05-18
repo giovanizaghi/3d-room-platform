@@ -16,10 +16,12 @@ import {
 } from "@repo/types";
 
 // Polling intervals (ms)
-const POLL_PROCESSING_MS = 3_000;  // at least one render is processing
-const POLL_QUEUED_MS     = 5_000;  // only queued renders (not yet running)
-const POLL_HIDDEN_MS     = 15_000; // browser tab is in background
-const DONE_LINGER_MS     = 5_000;  // how long completed items stay visible
+const POLL_PROCESSING_MS = 3_000;   // at least one render is processing
+const POLL_QUEUED_MS     = 5_000;   // only queued renders (not yet running)
+const POLL_HIDDEN_MS     = 15_000;  // browser tab is in background
+const UNDO_WINDOW_MS     = 10_000;  // how long undo is available after dismiss
+const EXIT_ANIM_MS       = 500;     // dismiss fade-out animation duration
+const DISMISSED_LS_KEY   = "rq-dismissed";
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
 // ---------------------------------------------------------------------------
@@ -27,23 +29,36 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 // ---------------------------------------------------------------------------
 
 export interface QueueEntry extends RenderQueueItem {
-  /** Drives the fade-out-up CSS animation before removal */
   exiting?: boolean;
+}
+
+export interface SnackbarEntry {
+  batchId: string;
+  count: number;
+  label: string;
+}
+
+interface PendingBatch {
+  items: QueueEntry[];
+  removeTimer: ReturnType<typeof setTimeout>;
+  undoTimer: ReturnType<typeof setTimeout>;
 }
 
 interface RenderQueueContextValue {
   isOpen: boolean;
   items: QueueEntry[];
   activeCount: number;
+  snackbars: SnackbarEntry[];
   toggle: () => void;
   open: () => void;
   close: () => void;
-  /** Returns the most recent active (queued/processing) render for a given model, if any. */
   getActiveRender: (modelId: string) => QueueEntry | undefined;
-  /** Merges a known render into context state — used on page mount to hydrate from DB. */
   hydrateRender: (render: RenderQueueItem) => void;
-  /** Call immediately after POST /render to show the job in the panel before the first poll. */
   addOptimistic: (partial: { id: string; modelId: string; modelName: string }) => void;
+  dismissItem: (id: string) => void;
+  dismissAllTerminal: () => void;
+  undoDismiss: (batchId: string) => void;
+  dismissSnackbar: (batchId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -54,16 +69,50 @@ const RenderQueueContext = createContext<RenderQueueContextValue>({
   isOpen: false,
   items: [],
   activeCount: 0,
+  snackbars: [],
   toggle: () => {},
   open: () => {},
   close: () => {},
   getActiveRender: () => undefined,
   hydrateRender: () => {},
   addOptimistic: () => {},
+  dismissItem: () => {},
+  dismissAllTerminal: () => {},
+  undoDismiss: () => {},
+  dismissSnackbar: () => {},
 });
 
 export function useRenderQueue() {
   return useContext(RenderQueueContext);
+}
+
+// ---------------------------------------------------------------------------
+// localStorage helpers — track dismissed render IDs across page reloads
+// ---------------------------------------------------------------------------
+
+function getDismissedIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DISMISSED_LS_KEY);
+    return new Set<string>(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function addDismissedIds(ids: string[]): void {
+  try {
+    const set = getDismissedIds();
+    ids.forEach((id) => set.add(id));
+    localStorage.setItem(DISMISSED_LS_KEY, JSON.stringify([...set]));
+  } catch {}
+}
+
+function removeDismissedIds(ids: string[]): void {
+  try {
+    const set = getDismissedIds();
+    ids.forEach((id) => set.delete(id));
+    localStorage.setItem(DISMISSED_LS_KEY, JSON.stringify([...set]));
+  } catch {}
 }
 
 // ---------------------------------------------------------------------------
@@ -73,11 +122,8 @@ export function useRenderQueue() {
 export function RenderQueueProvider({ children }: { children: React.ReactNode }) {
   const [isOpen, setIsOpen] = useState(false);
   const [items, setItems] = useState<QueueEntry[]>([]);
-
-  // Track already-terminal IDs to detect done/failed/stalled transitions.
-  const terminalRef = useRef<Set<string>>(new Set());
-  // Linger timers: terminal items stay visible for DONE_LINGER_MS then animate out.
-  const lingerTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const [snackbars, setSnackbars] = useState<SnackbarEntry[]>([]);
+  const pendingDismissals = useRef<Map<string, PendingBatch>>(new Map());
 
   const pollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollDelayRef = useRef<number>(POLL_PROCESSING_MS);
@@ -94,22 +140,7 @@ export function RenderQueueProvider({ children }: { children: React.ReactNode })
   );
 
   // ------------------------------------------------------------------
-  // Schedule removal of a terminal item after a linger delay.
-  // ------------------------------------------------------------------
-  const scheduleLinger = useCallback((id: string) => {
-    if (lingerTimers.current.has(id)) return;
-    const timer = setTimeout(() => {
-      setItems((cur) => cur.map((i) => (i.id === id ? { ...i, exiting: true } : i)));
-      setTimeout(() => {
-        setItems((cur) => cur.filter((i) => i.id !== id));
-        lingerTimers.current.delete(id);
-      }, 500);
-    }, DONE_LINGER_MS);
-    lingerTimers.current.set(id, timer);
-  }, []);
-
-  // ------------------------------------------------------------------
-  // Fetch + merge latest renders from API.
+  // Fetch + merge latest renders from API, filtering out dismissed IDs.
   // ------------------------------------------------------------------
   const fetchRenders = useCallback(async () => {
     try {
@@ -117,23 +148,12 @@ export function RenderQueueProvider({ children }: { children: React.ReactNode })
       if (!res.ok) return;
       const fresh: RenderQueueItem[] = await res.json();
 
+      const dismissed = getDismissedIds();
+      const visible = fresh.filter((f) => !dismissed.has(f.id));
+
       setItems((prev) => {
         const prevById = new Map(prev.map((i) => [i.id, i]));
-        const freshById = new Map(fresh.map((i) => [i.id, i]));
-
-        // Detect transitions to terminal status.
-        fresh.forEach((f) => {
-          const wasActive =
-            !terminalRef.current.has(f.id) &&
-            ACTIVE_RENDER_STATUSES.includes(
-              prevById.get(f.id)?.status as RenderStatus,
-            );
-
-          if (TERMINAL_RENDER_STATUSES.includes(f.status as RenderStatus)) {
-            if (wasActive) scheduleLinger(f.id);
-            terminalRef.current.add(f.id);
-          }
-        });
+        const freshById = new Map(visible.map((i) => [i.id, i]));
 
         // Merge: keep exiting state, update everything else from fresh.
         const merged: QueueEntry[] = prev
@@ -145,7 +165,7 @@ export function RenderQueueProvider({ children }: { children: React.ReactNode })
           });
 
         // Add brand-new items not yet in local state.
-        fresh.forEach((f) => {
+        visible.forEach((f) => {
           if (!prevById.has(f.id)) merged.push({ ...f, exiting: false });
         });
 
@@ -158,7 +178,7 @@ export function RenderQueueProvider({ children }: { children: React.ReactNode })
     } catch {
       // Silently ignore network errors — next poll will retry.
     }
-  }, [scheduleLinger]);
+  }, []);
 
   // ------------------------------------------------------------------
   // Adaptive polling: adjust interval based on render state + tab visibility.
@@ -217,8 +237,102 @@ export function RenderQueueProvider({ children }: { children: React.ReactNode })
   useEffect(() => {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
-      lingerTimers.current.forEach((t) => clearTimeout(t));
+      pendingDismissals.current.forEach((batch) => {
+        clearTimeout(batch.removeTimer);
+        clearTimeout(batch.undoTimer);
+      });
     };
+  }, []);
+
+  // ------------------------------------------------------------------
+  // Dismiss + undo
+  // ------------------------------------------------------------------
+
+  const dismissItems = useCallback(
+    (ids: string[]) => {
+      const toRemove = items.filter(
+        (i) =>
+          !i.exiting &&
+          ids.includes(i.id) &&
+          TERMINAL_RENDER_STATUSES.includes(i.status as RenderStatus),
+      );
+      if (toRemove.length === 0) return;
+
+      const batchId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const toRemoveIds = new Set(toRemove.map((i) => i.id));
+
+      // Write to localStorage immediately so next poll filters these IDs.
+      addDismissedIds([...toRemoveIds]);
+
+      // Trigger exit animation.
+      setItems((cur) =>
+        cur.map((i) => (toRemoveIds.has(i.id) ? { ...i, exiting: true } : i)),
+      );
+
+      // Remove from visible state after animation completes.
+      const removeTimer = setTimeout(() => {
+        setItems((cur) => cur.filter((i) => !toRemoveIds.has(i.id)));
+      }, EXIT_ANIM_MS);
+
+      // After undo window expires, clean up the pending batch.
+      const undoTimer = setTimeout(() => {
+        pendingDismissals.current.delete(batchId);
+        setSnackbars((cur) => cur.filter((s) => s.batchId !== batchId));
+      }, UNDO_WINDOW_MS);
+
+      pendingDismissals.current.set(batchId, { items: toRemove, removeTimer, undoTimer });
+
+      const count = toRemove.length;
+      setSnackbars((cur) => [
+        ...cur,
+        { batchId, count, label: `${count} render${count !== 1 ? "s" : ""} cleared` },
+      ]);
+    },
+    [items],
+  );
+
+  const dismissItem = useCallback(
+    (id: string) => dismissItems([id]),
+    [dismissItems],
+  );
+
+  const dismissAllTerminal = useCallback(() => {
+    const terminalIds = items
+      .filter(
+        (i) =>
+          !i.exiting &&
+          TERMINAL_RENDER_STATUSES.includes(i.status as RenderStatus),
+      )
+      .map((i) => i.id);
+    dismissItems(terminalIds);
+  }, [items, dismissItems]);
+
+  const undoDismiss = useCallback((batchId: string) => {
+    const batch = pendingDismissals.current.get(batchId);
+    if (!batch) return;
+
+    clearTimeout(batch.removeTimer);
+    clearTimeout(batch.undoTimer);
+    pendingDismissals.current.delete(batchId);
+
+    removeDismissedIds(batch.items.map((i) => i.id));
+
+    setItems((cur) => {
+      const existingIds = new Set(cur.map((i) => i.id));
+      const restored = batch.items
+        .filter((i) => !existingIds.has(i.id))
+        .map((i) => ({ ...i, exiting: false }));
+      return [...restored, ...cur].sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      );
+    });
+
+    setSnackbars((cur) => cur.filter((s) => s.batchId !== batchId));
+  }, []);
+
+  const dismissSnackbar = useCallback((batchId: string) => {
+    setSnackbars((cur) => cur.filter((s) => s.batchId !== batchId));
   }, []);
 
   // ------------------------------------------------------------------
@@ -285,12 +399,17 @@ export function RenderQueueProvider({ children }: { children: React.ReactNode })
         isOpen,
         items,
         activeCount,
+        snackbars,
         toggle,
         open,
         close,
         getActiveRender,
         hydrateRender,
         addOptimistic,
+        dismissItem,
+        dismissAllTerminal,
+        undoDismiss,
+        dismissSnackbar,
       }}
     >
       {children}

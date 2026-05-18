@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { useRenderQueue, type QueueEntry } from "./RenderQueueContext";
-import { RenderStatus } from "@repo/types";
+import { RenderStatus, TERMINAL_RENDER_STATUSES } from "@repo/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -79,7 +79,7 @@ function ProgressBar({ progress }: { progress: number }) {
 // ---------------------------------------------------------------------------
 
 function RenderItem({ item }: { item: QueueEntry }) {
-  const { hydrateRender } = useRenderQueue();
+  const { hydrateRender, dismissItem } = useRenderQueue();
   const [retrying, setRetrying] = useState(false);
 
   const isDone     = item.status === RenderStatus.done;
@@ -153,7 +153,7 @@ function RenderItem({ item }: { item: QueueEntry }) {
 
   return (
     <div
-      className="rounded-xl border p-4 transition-all duration-300"
+      className="group rounded-xl border p-4 transition-all duration-300"
       style={{
         borderColor,
         background: bgGradient,
@@ -191,6 +191,18 @@ function RenderItem({ item }: { item: QueueEntry }) {
         >
           {item.status}
         </span>
+
+        {/* Dismiss — only enabled for terminal items */}
+        <button
+          onClick={() => dismissItem(item.id)}
+          disabled={isActive}
+          aria-label="Dismiss render"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-muted opacity-0 transition-all group-hover:opacity-100 hover:bg-white/8 hover:text-text-primary disabled:pointer-events-none disabled:opacity-0"
+        >
+          <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+          </svg>
+        </button>
       </div>
 
       {/* Progress bar for active renders */}
@@ -248,7 +260,11 @@ function RenderItem({ item }: { item: QueueEntry }) {
 // ---------------------------------------------------------------------------
 
 export function RenderQueuePanel() {
-  const { isOpen, items, close } = useRenderQueue();
+  const { isOpen, items, close, dismissAllTerminal } = useRenderQueue();
+
+  const terminalCount = items.filter(
+    (i) => !i.exiting && TERMINAL_RENDER_STATUSES.includes(i.status as RenderStatus),
+  ).length;
 
   return (
     <>
@@ -284,6 +300,15 @@ export function RenderQueuePanel() {
             </svg>
             <h2 className="text-sm font-semibold text-text-primary">Render Queue</h2>
           </div>
+          <div className="flex items-center gap-1">
+          {terminalCount > 0 && (
+            <button
+              onClick={dismissAllTerminal}
+              className="rounded-md px-2 py-1 text-[11px] text-text-muted transition-colors hover:bg-white/5 hover:text-text-secondary"
+            >
+              Clear all
+            </button>
+          )}
           <button
             onClick={close}
             className="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-white/8 hover:text-text-primary"
@@ -292,6 +317,7 @@ export function RenderQueuePanel() {
               <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
             </svg>
           </button>
+          </div>
         </div>
 
         {/* Items */}
