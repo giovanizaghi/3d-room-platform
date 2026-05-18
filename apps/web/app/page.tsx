@@ -45,6 +45,24 @@ export default function HomePage() {
           </p>
         </div>
 
+        {/* My Rooms quick link */}
+        <div className="mb-2">
+          <Link
+            href="/rooms"
+            className="inline-flex items-center gap-2 rounded-xl border border-border bg-bg-card hover:bg-bg-card-hover hover:border-accent/40 transition-all duration-200 px-4 py-2.5"
+          >
+            <div className="h-6 w-6 rounded-md bg-accent/20 flex items-center justify-center">
+              <svg className="h-3.5 w-3.5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 9.75L12 3l9 6.75V21H3V9.75z" />
+              </svg>
+            </div>
+            <span className="text-sm font-medium text-text-primary">My Rooms</span>
+            <svg className="h-3.5 w-3.5 text-text-muted ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </Link>
+        </div>
+
         {/* Model grid */}
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
           {models.map((model) => (
