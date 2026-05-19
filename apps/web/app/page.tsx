@@ -45,18 +45,18 @@ export default function HomePage() {
           </p>
         </div>
 
-        {/* My Rooms quick link */}
+        {/* My Projects quick link */}
         <div className="mb-2">
           <Link
-            href="/rooms"
+            href="/projects"
             className="inline-flex items-center gap-2 rounded-xl border border-border bg-bg-card hover:bg-bg-card-hover hover:border-accent/40 transition-all duration-200 px-4 py-2.5"
           >
             <div className="h-6 w-6 rounded-md bg-accent/20 flex items-center justify-center">
               <svg className="h-3.5 w-3.5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 9.75L12 3l9 6.75V21H3V9.75z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
               </svg>
             </div>
-            <span className="text-sm font-medium text-text-primary">My Rooms</span>
+            <span className="text-sm font-medium text-text-primary">My Projects</span>
             <svg className="h-3.5 w-3.5 text-text-muted ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
             </svg>
