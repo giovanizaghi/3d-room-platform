@@ -135,8 +135,9 @@ export function RenderModal({
               className="w-full h-full object-contain"
             />
           ) : (
-            <div className="w-full h-full flex items-center justify-center">
+            <div className="w-full h-full flex flex-col items-center justify-center gap-3">
               <div className="w-10 h-10 rounded-full border-2 border-accent/40 border-t-accent animate-spin" />
+              <span className="text-[11px] text-white/30">Waiting for Blender…</span>
             </div>
           )}
 

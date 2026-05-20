@@ -59,8 +59,10 @@ ceiling_h     = float(meta.get("ceilingHeight", 2.7))
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
 scene = bpy.context.scene
-scene.render.engine = "BLENDER_EEVEE_NEXT"
-scene.eevee.taa_render_samples = 16    # fast — good enough as AI lighting reference
+scene.render.engine = "CYCLES"
+scene.cycles.device = "CPU"
+scene.cycles.samples = 8              # low — AI only needs a lighting reference
+scene.cycles.use_denoising = True     # denoiser compensates for the low sample count
 scene.render.resolution_x = 512
 scene.render.resolution_y = 384
 scene.render.image_settings.file_format = "PNG"
@@ -193,8 +195,9 @@ for wall_id in hidden_walls:
         continue
     wall_obj = bpy.data.objects.get(mesh_name)
     if wall_obj:
-        # Hide from camera but keep shadow — works in both EEVEE Next and Cycles
-        wall_obj.visible_camera = False
+        # Hide from camera but keep shadow contribution (Cycles)
+        wall_obj.cycles_visibility.camera = False
+        wall_obj.cycles_visibility.shadow = True
 
 # ---------------------------------------------------------------------------
 # Add ambient world light so the scene isn't pitch-black

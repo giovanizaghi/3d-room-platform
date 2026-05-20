@@ -9,7 +9,7 @@ export interface SceneSetup {
 export function createScene(container: HTMLDivElement, width: number, depth: number): SceneSetup {
   const span = Math.max(width, depth);
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(container.clientWidth, container.clientHeight);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
