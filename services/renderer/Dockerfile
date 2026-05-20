@@ -27,7 +27,7 @@ RUN curl -fSL "https://download.blender.org/release/Blender5.1/blender-${BLENDER
 WORKDIR /app/renderer
 
 # Install Python deps into the system Python (for server.py / Flask)
-COPY services/renderer/requirements.txt .
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install openai into Blender's embedded Python too (ai_enhance.py runs inside Blender)
@@ -35,7 +35,7 @@ RUN blender -b --python-expr \
     "import subprocess, sys; subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'openai>=1.0.0'])"
 
 # Copy all renderer scripts
-COPY services/renderer/ .
+COPY . .
 
 ENV BLENDER_BIN=blender
 ENV OUTPUT_DIR=/tmp/renderer_output
