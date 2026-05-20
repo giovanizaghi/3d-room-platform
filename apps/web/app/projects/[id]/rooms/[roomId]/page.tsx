@@ -386,16 +386,28 @@ export default function RoomEditorPage() {
           <span className="text-[10px] text-white/40 font-mono">{width} × {depth} m</span>
         </div>
 
-        {/* Top-left selection label */}
-        <div className="w-20 flex justify-end">
-          {selectionInfo && (
-            <span className="text-[11px] font-medium text-white/80 bg-black/40 rounded-lg px-2 py-1 capitalize">
-              {selectionInfo.type === "wall"      ? `Wall: ${selectionInfo.subType}` :
-               selectionInfo.type === "floor"     ? "Floor" :
-               selectionInfo.type === "light"     ? (selectionInfo.light?.type === "spotLight" ? "Spot Light" : "Point Light") :
-               selectionInfo.subType ?? selectionInfo.type}
-            </span>
-          )}
+        {/* Camera presets — horizontal */}
+        <div className="flex items-center gap-0.5">
+          <span className="text-[11px] font-medium text-white/40 mr-1.5 select-none">{cameraLabel}</span>
+          <div className="w-px h-3.5 bg-white/20 mr-0.5" />
+          {CAMERA_PRESETS.map(({ preset, label, icon }) => {
+            const isActive = cameraLabel === label;
+            return (
+              <div key={preset} className="relative group">
+                <button
+                  onClick={() => setCameraPresetRef.current?.(preset)}
+                  className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-150
+                    ${isActive ? "bg-accent text-white shadow-sm" : "text-white/60 hover:text-white hover:bg-white/10"}`}
+                >
+                  {icon}
+                </button>
+                <div className="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover:flex flex-col items-center z-20">
+                  <div className="w-0 h-0 border-x-[5px] border-x-transparent border-b-[5px] border-b-gray-900" />
+                  <span className="rounded-lg bg-gray-900 text-white text-[10px] font-medium px-2.5 py-1.5 whitespace-nowrap shadow-lg border border-white/10">{label}</span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -579,31 +591,7 @@ export default function RoomEditorPage() {
         initialPos={{ x: 16, y: 64 }}
       />
 
-      {/* ── Camera presets — top right ────────────────────────────────── */}
-      <div className="absolute top-16 right-4 z-10 flex flex-col items-center gap-1 rounded-2xl bg-black/50 backdrop-blur-md border border-white/10 px-2 py-2.5">
-        {CAMERA_PRESETS.map(({ preset, label, icon }) => {
-          const isActive = cameraLabel === label;
-          return (
-            <div key={preset} className="relative group">
-              <button
-                onClick={() => setCameraPresetRef.current?.(preset)}
-                className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-150
-                  ${isActive
-                    ? "bg-accent text-white shadow-sm"
-                    : "text-white/70 hover:text-white hover:bg-white/10"}`}
-              >
-                {icon}
-              </button>
-              <div className="pointer-events-none absolute right-full top-1/2 -translate-y-1/2 mr-2 hidden group-hover:flex items-center">
-                <span className="rounded-lg bg-gray-900 text-white text-[10px] font-medium px-2.5 py-1.5 whitespace-nowrap shadow-lg border border-white/10">
-                  {label}
-                </span>
-                <div className="w-0 h-0 border-y-[5px] border-y-transparent border-l-[5px] border-l-gray-900 -mr-1" />
-              </div>
-            </div>
-          );
-        })}
-      </div>
+
 
       {/* ── Bottom hints ──────────────────────────────────────────────── */}
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex gap-4 rounded-xl bg-black/50 backdrop-blur-md border border-white/10 px-4 py-2 text-[11px] text-white/50 pointer-events-none select-none">

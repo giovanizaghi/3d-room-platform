@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -31,11 +31,16 @@ function phaseLabel(phase: RenderPhase): string {
 function phaseDescription(phase: RenderPhase): string {
   switch (phase) {
     case "capturing":  return "Capturing scene and sending to the renderer.";
-    case "rendering":  return "The scene is being rendered with Cycles. This may take a moment.";
+    case "rendering":  return "Blender Cycles is rendering on CPU — this takes 3–10 min.";
     case "enhancing":  return "Applying AI photorealistic enhancement.";
     case "done":       return "Your render is ready.";
     case "error":      return "Something went wrong during rendering.";
   }
+}
+
+function fmtElapsed(s: number): string {
+  const m = Math.floor(s / 60);
+  return `${m}:${String(s % 60).padStart(2, "0")}`;
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -50,6 +55,18 @@ export function RenderModal({
   onClose,
 }: RenderModalProps) {
   const isProcessing = phase !== "done" && phase !== "error";
+
+  // Elapsed timer — starts fresh each time we enter a long-running phase
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (phase === "rendering" || phase === "enhancing") {
+      setElapsed(0);
+      const id = setInterval(() => setElapsed(s => s + 1), 1000);
+      return () => clearInterval(id);
+    }
+  }, [phase]);
+
+  const showTimer = (phase === "rendering" || phase === "enhancing") && elapsed > 0;
 
   // Determine which image to show — prefer the most advanced available
   const displayUrl = finalImageUrl ?? blenderImageUrl ?? screenshotUrl;
@@ -91,7 +108,10 @@ export function RenderModal({
             </div>
             <div>
               <p className="text-sm font-semibold text-white">{phaseLabel(phase)}</p>
-              <p className="text-[11px] text-white/50">{phaseDescription(phase)}</p>
+              <p className="text-[11px] text-white/50">
+                {phaseDescription(phase)}
+                {showTimer && <span className="ml-1.5 font-mono text-white/40">{fmtElapsed(elapsed)}</span>}
+              </p>
             </div>
           </div>
 
