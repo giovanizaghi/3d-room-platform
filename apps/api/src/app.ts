@@ -773,7 +773,7 @@ app.post("/render-scene", sceneUpload.fields([
 
   let rendererData: { jobId: string };
   try {
-    const rendererRes = await fetch(`${RENDERER_URL}/render-from-glb`, { method: "POST", body: form });
+    const rendererRes = await fetch(`${RENDERER_URL}/render-from-glb`, { method: "POST", body: form, signal: AbortSignal.timeout(30000) });
     if (!rendererRes.ok) {
       const msg = await rendererRes.text().catch(() => `HTTP ${rendererRes.status}`);
       console.error(JSON.stringify({ event: "render_scene_renderer_error", msg }));
@@ -803,13 +803,28 @@ app.get("/render-scene/:jobId", async (req, res) => {
   if (!job) return res.status(404).json({ error: "job not found" });
 
   try {
-    const rendererRes = await fetch(`${RENDERER_URL}/jobs/${job.rendererJobId}`);
-    if (!rendererRes.ok) return res.status(502).json({ error: "Renderer service unavailable" });
+    const rendererRes = await fetch(`${RENDERER_URL}/jobs/${job.rendererJobId}`, {
+      signal: AbortSignal.timeout(12000),
+    });
+    if (rendererRes.status === 404) {
+      // Renderer restarted and lost its in-memory job store.
+      // Mark as error so the UI can show a retry prompt.
+      job.status = "error";
+      job.error = "Renderer restarted during render. Please try again.";
+      return res.json({ jobId: job.id, status: job.status, error: job.error });
+    }
+    if (!rendererRes.ok) {
+      const body = await rendererRes.text().catch(() => "");
+      console.error(JSON.stringify({ event: "render_scene_poll_error", jobId: job.id, rendererStatus: rendererRes.status, body }));
+      return res.status(502).json({ error: `Renderer returned ${rendererRes.status}` });
+    }
     const data = await rendererRes.json() as { status: RenderSceneStatus; error?: string };
     job.status = data.status;
     if (data.error) job.error = data.error;
     return res.json({ jobId: job.id, status: job.status, error: job.error ?? null });
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(JSON.stringify({ event: "render_scene_poll_fetch_error", jobId: job.id, error: msg }));
     return res.status(502).json({ error: "Could not reach renderer service" });
   }
 });

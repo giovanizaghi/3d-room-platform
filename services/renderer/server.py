@@ -32,17 +32,47 @@ RENDERER_DIR  = os.path.dirname(os.path.abspath(__file__))
 Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
-# In-memory job store (prototype — lost on restart, acceptable)
+# Job store — in-memory with disk backing so container restarts don't lose jobs
 # ---------------------------------------------------------------------------
 
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
 
+def _job_file(job_id: str) -> Path:
+    return Path(OUTPUT_DIR) / f"{job_id}.json"
+
+
 def _set_job(job_id: str, **kwargs) -> None:
     with _jobs_lock:
         if job_id in _jobs:
             _jobs[job_id].update(kwargs)
+            try:
+                with open(_job_file(job_id), "w") as f:
+                    json.dump(_jobs[job_id], f)
+            except Exception:
+                pass
+
+
+def _load_job_from_disk(job_id: str) -> dict | None:
+    """Try to restore a job from its on-disk status file."""
+    jf = _job_file(job_id)
+    if not jf.exists():
+        return None
+    try:
+        with open(jf) as f:
+            data = json.load(f)
+        # If the process was mid-render when the container restarted, mark as error.
+        if data.get("status") == "rendering":
+            data["status"] = "error"
+            data["error"] = "Render interrupted by service restart. Please try again."
+            with open(jf, "w") as f:
+                json.dump(data, f)
+        with _jobs_lock:
+            _jobs[job_id] = data
+        return data
+    except Exception:
+        return None
 
 
 def _run_job(job_id: str, blender_args: list[str], output_path: str) -> None:
@@ -88,15 +118,21 @@ def _run_job(job_id: str, blender_args: list[str], output_path: str) -> None:
 
 def _start_job(blender_args: list[str], output_path: str) -> str:
     job_id = str(uuid.uuid4())
+    data = {
+        "status": "rendering",
+        "progress": 0,
+        "stage": None,
+        "message": None,
+        "error": None,
+        "output_path": None,
+    }
     with _jobs_lock:
-        _jobs[job_id] = {
-            "status": "rendering",
-            "progress": 0,
-            "stage": None,
-            "message": None,
-            "error": None,
-            "output_path": None,
-        }
+        _jobs[job_id] = data
+        try:
+            with open(_job_file(job_id), "w") as f:
+                json.dump(data, f)
+        except Exception:
+            pass
     thread = threading.Thread(
         target=_run_job,
         args=(job_id, blender_args, output_path),
@@ -234,6 +270,9 @@ def render_from_glb():
 def get_job(job_id: str):
     with _jobs_lock:
         job = _jobs.get(job_id)
+    # Fall back to disk if not in memory (e.g. service restarted)
+    if not job:
+        job = _load_job_from_disk(job_id)
     if not job:
         return jsonify({"error": "job not found"}), 404
     return jsonify({
@@ -265,4 +304,19 @@ def get_job_output(job_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"[renderer] Starting on port {port}, Blender: {BLENDER_BIN}")
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    # Use gunicorn in production for stability; fall back to Flask dev server if unavailable.
+    try:
+        import gunicorn  # noqa: F401 — check it is installed
+        import subprocess as _sp
+        import sys as _sys
+        _sp.run([
+            _sys.executable, "-m", "gunicorn",
+            "server:app",
+            "--bind", f"0.0.0.0:{port}",
+            "--workers", "1",   # 1 worker = shared in-memory job store
+            "--threads", "4",   # thread concurrency for polling
+            "--timeout", "120", # long timeout for large file uploads
+            "--access-logfile", "-",
+        ], check=True)
+    except (ImportError, Exception):
+        app.run(host="0.0.0.0", port=port, threaded=True)

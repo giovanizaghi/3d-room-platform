@@ -61,10 +61,10 @@ bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
 scene.render.engine = "CYCLES"
 scene.cycles.device = "CPU"
-scene.cycles.samples = 8              # low — AI only needs a lighting reference
-scene.cycles.use_denoising = True     # denoiser compensates for the low sample count
-scene.render.resolution_x = 512
-scene.render.resolution_y = 384
+scene.cycles.samples = 4              # ultra-low — AI lighting reference only
+scene.cycles.use_denoising = True
+scene.render.resolution_x = 320
+scene.render.resolution_y = 240
 scene.render.image_settings.file_format = "PNG"
 scene.render.filepath = args.output
 
@@ -195,9 +195,9 @@ for wall_id in hidden_walls:
         continue
     wall_obj = bpy.data.objects.get(mesh_name)
     if wall_obj:
-        # Hide from camera but keep shadow contribution (Cycles)
-        wall_obj.cycles_visibility.camera = False
-        wall_obj.cycles_visibility.shadow = True
+        # visible_camera is the standard API from Blender 4.0+
+        # (cycles_visibility.camera was removed in Blender 4.0)
+        wall_obj.visible_camera = False
 
 # ---------------------------------------------------------------------------
 # Add ambient world light so the scene isn't pitch-black
