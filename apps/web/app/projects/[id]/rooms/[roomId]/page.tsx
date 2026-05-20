@@ -1,11 +1,14 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
-import { RoomScene, type ObjectType, type ToolMode, type WallId, type CameraPreset, type LightProps, type MaterialProps, type TransformData, type SelectionInfo } from "../../../../components/room-editor/RoomScene";
+import { RoomScene, type ObjectType, type ToolMode, type WallId, type CameraPreset, type LightProps, type MaterialProps, type TransformData, type SelectionInfo, type SceneMetadata } from "../../../../components/room-editor/RoomScene";
 import { Inspector } from "../../../../components/room-editor/Inspector";
+import { RenderModal, type RenderPhase } from "../../../../components/room-editor/RenderModal";
 import { MOCK_ROOMS } from "../../../../lib/mock-data";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
 // ---- Camera preset icon definitions -------------------------------------
 const CAMERA_PRESETS: { preset: CameraPreset; label: string; icon: React.ReactNode }[] = [
@@ -238,6 +241,102 @@ export default function RoomEditorPage() {
   const updateLightRef      = useRef<((props: Partial<LightProps>) => void) | null>(null);
   const updateMaterialRef   = useRef<((props: Partial<MaterialProps>) => void) | null>(null);
   const updateTransformRef  = useRef<((props: Partial<TransformData>) => void) | null>(null);
+  const captureScreenshotRef = useRef<(() => string) | null>(null);
+  const exportSceneRef       = useRef<(() => Promise<{ glb: ArrayBuffer; metadata: SceneMetadata }>) | null>(null);
+
+  // ── Render modal state ─────────────────────────────────────────────────
+  const [renderModalOpen, setRenderModalOpen]   = useState(false);
+  const [renderPhase, setRenderPhase]           = useState<RenderPhase>("capturing");
+  const [screenshotUrl, setScreenshotUrl]       = useState<string | null>(null);
+  const [blenderImageUrl, setBlenderImageUrl]   = useState<string | null>(null);
+  const [finalImageUrl, setFinalImageUrl]       = useState<string | null>(null);
+  const [renderError, setRenderError]           = useState<string | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  const handleCloseRenderModal = useCallback(() => {
+    stopPolling();
+    setRenderModalOpen(false);
+  }, [stopPolling]);
+
+  const handleRender = useCallback(async () => {
+    if (!captureScreenshotRef.current || !exportSceneRef.current) return;
+
+    // Reset state
+    setBlenderImageUrl(null);
+    setFinalImageUrl(null);
+    setRenderError(null);
+    setRenderPhase("capturing");
+    setRenderModalOpen(true);
+
+    // 1. Capture screenshot for immediate preview
+    const screenshot = captureScreenshotRef.current();
+    setScreenshotUrl(screenshot);
+
+    let glb: ArrayBuffer;
+    let metadata: SceneMetadata;
+    try {
+      ({ glb, metadata } = await exportSceneRef.current());
+    } catch (err) {
+      setRenderPhase("error");
+      setRenderError(err instanceof Error ? err.message : "Failed to export scene.");
+      return;
+    }
+
+    // 2. Send to API
+    setRenderPhase("rendering");
+    const formData = new FormData();
+    formData.append("scene", new Blob([glb], { type: "model/gltf-binary" }), "scene.glb");
+    formData.append("metadata", JSON.stringify(metadata));
+
+    let jobId: string;
+    try {
+      const res = await fetch(`${API_BASE}/render-scene`, { method: "POST", body: formData });
+      if (!res.ok) throw new Error(`API error ${res.status}`);
+      ({ jobId } = await res.json() as { jobId: string });
+    } catch (err) {
+      setRenderPhase("error");
+      setRenderError(err instanceof Error ? err.message : "Failed to start render job.");
+      return;
+    }
+
+    // 3. Poll for status
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/render-scene/${jobId}`);
+        if (!res.ok) throw new Error(`Poll error ${res.status}`);
+        const data = await res.json() as { status: string; error?: string };
+
+        if (data.status === "enhancing") {
+          setRenderPhase("enhancing");
+          setBlenderImageUrl(`${API_BASE}/render-scene/${jobId}/image?t=${Date.now()}`);
+          pollTimerRef.current = setTimeout(poll, 2000);
+        } else if (data.status === "done") {
+          setRenderPhase("done");
+          setFinalImageUrl(`${API_BASE}/render-scene/${jobId}/image?t=${Date.now()}`);
+        } else if (data.status === "error") {
+          setRenderPhase("error");
+          setRenderError(data.error ?? "Rendering failed.");
+        } else {
+          // still rendering
+          pollTimerRef.current = setTimeout(poll, 2000);
+        }
+      } catch (err) {
+        setRenderPhase("error");
+        setRenderError(err instanceof Error ? err.message : "Lost connection to render server.");
+      }
+    };
+    pollTimerRef.current = setTimeout(poll, 2000);
+  }, [stopPolling]);
+
+  // Stop polling when component unmounts
+  useEffect(() => stopPolling, [stopPolling]);
 
   const handleAddObject = (type: ObjectType) => {
     addObjectRef.current?.(type);
@@ -260,6 +359,8 @@ export default function RoomEditorPage() {
           updateLightRef={updateLightRef}
           updateMaterialRef={updateMaterialRef}
           updateTransformRef={updateTransformRef}
+          captureScreenshotRef={captureScreenshotRef}
+          exportSceneRef={exportSceneRef}
           onInspectorChange={setSelectionInfo}
           onWallSelect={() => {}}
           onCameraChange={setCameraLabel}
@@ -405,6 +506,21 @@ export default function RoomEditorPage() {
             </svg>
           }
         />
+
+        <div className="w-6 h-px bg-white/15 my-0.5" />
+
+        {/* Render button */}
+        <SectionIcon
+          label="Render"
+          active={false}
+          onClick={handleRender}
+          icon={
+            <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" stroke="currentColor" strokeWidth={1.6}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z"/>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z"/>
+            </svg>
+          }
+        />
       </div>
 
       {/* Object flyout panels */}
@@ -499,6 +615,17 @@ export default function RoomEditorPage() {
         <span className="opacity-40">·</span>
         <span>Esc to deselect</span>
       </div>
+
+      {/* ── Render modal ───────────────────────────────────────────────── */}
+      <RenderModal
+        open={renderModalOpen}
+        phase={renderPhase}
+        screenshotUrl={screenshotUrl}
+        blenderImageUrl={blenderImageUrl}
+        finalImageUrl={finalImageUrl}
+        errorMessage={renderError}
+        onClose={handleCloseRenderModal}
+      />
 
     </div>
   );

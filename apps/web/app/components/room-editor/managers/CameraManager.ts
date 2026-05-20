@@ -60,6 +60,14 @@ export class CameraManager {
     return this.camera.position;
   }
 
+  get target(): THREE.Vector3 {
+    return this.controls.target;
+  }
+
+  get fov(): number {
+    return this.camera.fov;
+  }
+
   setPreset(preset: CameraPreset): void {
     const index = ["perspective", "top", "front", "left", "right"].indexOf(preset);
     const snap = this.PRESETS[index];

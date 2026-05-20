@@ -54,6 +54,12 @@ export class WallObjectManager {
       .map(([, m]) => m);
   }
 
+  getHiddenWalls(): WallId[] {
+    return (Object.entries(this.wallMeshes) as [WallId, THREE.Mesh][])
+      .filter(([, m]) => m.userData.simHidden)
+      .map(([id]) => id);
+  }
+
   findWallId(mesh: THREE.Mesh): WallId | null {
     return (Object.entries(this.wallMeshes) as [WallId, THREE.Mesh][])
       .find(([, m]) => m === mesh)?.[0] ?? null;
@@ -192,6 +198,7 @@ export class WallObjectManager {
     const oldMesh = this.wallMeshes[wallId];
     const geo = buildWallWithHoles(wallW, wallH, THICKNESS, holes);
     const newMesh = new THREE.Mesh(geo, (oldMesh.material as THREE.MeshStandardMaterial).clone());
+    newMesh.name = `wall_${wallId}`;
     newMesh.position.copy(oldMesh.position);
     if (!isXWall) newMesh.rotation.y = Math.PI / 2;
     newMesh.castShadow = true;

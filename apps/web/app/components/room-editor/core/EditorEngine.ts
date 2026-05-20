@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
+import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import type {
   ObjectType,
   ToolMode,
@@ -10,8 +11,10 @@ import type {
   TransformData,
   EditorConfig,
   EditorCallbacks,
+  SceneMetadata,
+  LightExport,
 } from "../domain/types";
-import { FLOOR_TYPES, WALL_TYPES, LIGHT_TYPES } from "../domain/constants";
+import { FLOOR_TYPES, WALL_TYPES, LIGHT_TYPES, WALL_HEIGHT } from "../domain/constants";
 import { disposeObject } from "../utils/disposeThree";
 import { createScene } from "../scene/SceneFactory";
 import { createLighting } from "../scene/LightingFactory";
@@ -41,9 +44,13 @@ export class EditorEngine {
   private eventManager: EventManager;
   private renderLoop: RenderLoop;
   private inspectorBridge: InspectorBridge;
+  private width: number;
+  private depth: number;
 
   constructor(config: EditorConfig, callbacks: EditorCallbacks) {
     const { width, depth, container } = config;
+    this.width = width;
+    this.depth = depth;
 
     // 1. Scene setup
     const { renderer, scene, camera } = createScene(container, width, depth);
@@ -250,6 +257,71 @@ export class EditorEngine {
     }
 
     this.selectionManager.broadcastCurrent(true);
+  }
+
+  captureScreenshot(): string {
+    return this.renderer.domElement.toDataURL("image/png");
+  }
+
+  exportScene(): Promise<{ glb: ArrayBuffer; metadata: SceneMetadata }> {
+    // Build metadata
+    const camPos = this.cameraManager.position;
+    const camTarget = this.cameraManager.target;
+    const lights: LightExport[] = this.lightManager.entries.map(entry => {
+      const pos = entry.proxy.position;
+      const p = entry.light.userData as LightProps;
+      return {
+        type: p.type,
+        position: { x: pos.x, y: pos.y, z: pos.z },
+        intensity: p.intensity,
+        distance: p.distance,
+        colorTemp: p.colorTemp,
+        castShadow: p.castShadow,
+        ...(p.angle !== undefined ? { angle: p.angle } : {}),
+        ...(p.penumbra !== undefined ? { penumbra: p.penumbra } : {}),
+      };
+    });
+
+    const metadata: SceneMetadata = {
+      camera: {
+        position: { x: camPos.x, y: camPos.y, z: camPos.z },
+        target: { x: camTarget.x, y: camTarget.y, z: camTarget.z },
+        fov: this.cameraManager.fov,
+      },
+      lights,
+      roomDimensions: { width: this.width, depth: this.depth },
+      hiddenWalls: this.wallObjectManager.getHiddenWalls(),
+      ceilingHeight: WALL_HEIGHT,
+    };
+
+    // Build a minimal scene containing only exportable objects (no helpers, wireframes, grids)
+    const exportScene = new THREE.Scene();
+    this.scene.traverse(obj => {
+      if (obj.userData.excludeFromExport) return;
+      if (!(obj instanceof THREE.Mesh)) return;
+      // Skip light proxy helpers (helperLines are LineSegments, not Meshes — but proxy itself is fine)
+      if (obj.userData.isLight) return; // light proxies are octahedra, not needed in Blender scene
+      exportScene.add(obj.clone());
+    });
+
+    return new Promise((resolve, reject) => {
+      const exporter = new GLTFExporter();
+      exporter.parse(
+        exportScene,
+        (result) => {
+          if (result instanceof ArrayBuffer) {
+            resolve({ glb: result, metadata });
+          } else {
+            // Should not happen with binary:true, but handle gracefully
+            const json = JSON.stringify(result);
+            const buf = new TextEncoder().encode(json).buffer as ArrayBuffer;
+            resolve({ glb: buf, metadata });
+          }
+        },
+        (err) => reject(err),
+        { binary: true },
+      );
+    });
   }
 
   dispose(): void {

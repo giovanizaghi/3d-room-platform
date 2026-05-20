@@ -1,9 +1,10 @@
 import cors from "cors";
 import express from "express";
 import multer from "multer";
-import { copyFile, mkdir, open, readFile, rm, stat } from "node:fs/promises";
+import { copyFile, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { prisma, RenderStatus } from "@repo/db";
 import { createRenderQueue, createConvertQueue } from "@repo/queue";
 import { isConfigured as storageConfigured, isStorageKey, upload as storageUpload } from "@repo/storage";
@@ -714,6 +715,151 @@ async function seedChairModel() {
 
   console.log(JSON.stringify({ event: "model_seeded", modelId, name: "Chair", storage: storageConfigured() ? "s3" : "local" }));
 }
+
+// ---------------------------------------------------------------------------
+// Room Scene Render (prototype — in-memory, no DB)
+// ---------------------------------------------------------------------------
+
+type RenderSceneStatus = "rendering" | "enhancing" | "done" | "error";
+
+interface RenderSceneJob {
+  id: string;
+  status: RenderSceneStatus;
+  outputPath: string;
+  createdAt: Date;
+  error?: string;
+}
+
+const renderSceneJobs = new Map<string, RenderSceneJob>();
+
+const sceneRenderDir = resolve(outputDir, "_scene_renders");
+
+// Multer instance specifically for scene uploads (GLB + JSON metadata)
+const sceneUpload = multer({
+  storage: multer.diskStorage({
+    destination: async (_req, _file, cb) => {
+      await mkdir(sceneRenderDir, { recursive: true });
+      cb(null, sceneRenderDir);
+    },
+    filename: (_req, file, cb) => {
+      const ext = extname(file.originalname).toLowerCase() || (file.fieldname === "scene" ? ".glb" : ".json");
+      cb(null, `${randomUUID()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
+});
+
+app.use("/render-scene", (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
+
+app.post("/render-scene", sceneUpload.fields([
+  { name: "scene", maxCount: 1 },
+  { name: "metadata", maxCount: 1 },
+]), async (req, res) => {
+  const files = req.files as Record<string, Express.Multer.File[]> | undefined;
+  const sceneFile = files?.["scene"]?.[0];
+
+  // metadata can be a file OR a text field (FormData sends it as text when JSON.stringify'd)
+  let metadataStr: string | undefined =
+    typeof req.body?.metadata === "string" ? req.body.metadata : undefined;
+  if (!metadataStr) {
+    const metaFile = files?.["metadata"]?.[0];
+    if (metaFile) metadataStr = await readFile(metaFile.path, "utf-8");
+  }
+
+  if (!sceneFile) return res.status(400).json({ error: "scene (.glb) is required" });
+  if (!metadataStr) return res.status(400).json({ error: "metadata (JSON) is required" });
+
+  let metadata: Record<string, unknown>;
+  try {
+    metadata = JSON.parse(metadataStr) as Record<string, unknown>;
+  } catch {
+    return res.status(400).json({ error: "metadata must be valid JSON" });
+  }
+
+  const jobId = randomUUID();
+  const jobDir = resolve(sceneRenderDir, jobId);
+  await mkdir(jobDir, { recursive: true });
+
+  const glbPath = resolve(jobDir, "scene.glb");
+  const metadataPath = resolve(jobDir, "metadata.json");
+  const outputPath = resolve(jobDir, "render.png");
+
+  await copyFile(sceneFile.path, glbPath);
+  await writeFile(metadataPath, JSON.stringify(metadata), "utf-8");
+  await rm(sceneFile.path).catch(() => {});
+
+  const job: RenderSceneJob = { id: jobId, status: "rendering", outputPath, createdAt: new Date() };
+  renderSceneJobs.set(jobId, job);
+
+  // Spawn Blender in background — fire-and-forget
+  const scriptPath = resolve(process.cwd(), "../../services/renderer/render_from_glb.py");
+  const blender = spawn(
+    process.env.BLENDER_BIN ?? "blender",
+    ["-b", "-P", scriptPath, "--", "--glb", glbPath, "--metadata", metadataPath, "--output", outputPath],
+    { detached: false },
+  );
+
+  blender.stdout.on("data", (chunk: Buffer) => {
+    const lines = chunk.toString().split("\n");
+    for (const line of lines) {
+      if (line.startsWith("RENDER_SCENE_STATUS:")) {
+        const payload = line.slice("RENDER_SCENE_STATUS:".length).trim();
+        try {
+          const update = JSON.parse(payload) as { status: RenderSceneStatus };
+          const j = renderSceneJobs.get(jobId);
+          if (j) j.status = update.status;
+        } catch { /* ignore malformed */ }
+      }
+    }
+  });
+
+  blender.on("close", (code) => {
+    const j = renderSceneJobs.get(jobId);
+    if (!j) return;
+    if (code === 0) {
+      j.status = "done";
+    } else if (j.status !== "done") {
+      j.status = "error";
+      j.error = `Blender exited with code ${code}`;
+    }
+    console.log(JSON.stringify({ event: "render_scene_done", jobId, code, status: j.status }));
+  });
+
+  blender.on("error", (err) => {
+    const j = renderSceneJobs.get(jobId);
+    if (j) { j.status = "error"; j.error = err.message; }
+    console.error(JSON.stringify({ event: "render_scene_spawn_error", jobId, error: err.message }));
+  });
+
+  console.log(JSON.stringify({ event: "render_scene_started", jobId }));
+  return res.status(202).json({ jobId });
+});
+
+app.get("/render-scene/:jobId", (req, res) => {
+  const job = renderSceneJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: "job not found" });
+  return res.json({ jobId: job.id, status: job.status, error: job.error ?? null });
+});
+
+app.get("/render-scene/:jobId/image", async (req, res) => {
+  const job = renderSceneJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: "job not found" });
+
+  try {
+    await stat(job.outputPath);
+  } catch {
+    return res.status(404).json({ error: "image not ready" });
+  }
+
+  try {
+    const data = await readFile(job.outputPath);
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "no-store");
+    return res.send(data);
+  } catch {
+    return res.status(500).json({ error: "failed to read image" });
+  }
+});
 
 export { app, outputDir, modelsDir, seedChairModel };
 

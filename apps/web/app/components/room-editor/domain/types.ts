@@ -100,3 +100,28 @@ export interface EditorConfig {
   depth: number;
   container: HTMLDivElement;
 }
+
+// ── Scene export / render DTOs ──────────────────────────────────────────────
+
+export interface LightExport {
+  type: "pointLight" | "spotLight";
+  position: { x: number; y: number; z: number };
+  intensity: number;
+  distance: number;
+  colorTemp: number;
+  castShadow: boolean;
+  angle?: number;
+  penumbra?: number;
+}
+
+export interface SceneMetadata {
+  camera: {
+    position: { x: number; y: number; z: number };
+    target: { x: number; y: number; z: number };
+    fov: number;
+  };
+  lights: LightExport[];
+  roomDimensions: { width: number; depth: number };
+  hiddenWalls: WallId[];
+  ceilingHeight: number;
+}

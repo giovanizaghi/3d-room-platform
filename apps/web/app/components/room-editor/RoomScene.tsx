@@ -15,6 +15,8 @@ export type {
   TransformData,
   SelectionInfo,
   MaterialPreset,
+  SceneMetadata,
+  LightExport,
 } from "./domain/types";
 export { MATERIAL_PRESETS } from "./domain/constants";
 export { kelvinToHex } from "./utils/kelvinToHex";
@@ -29,6 +31,7 @@ import type {
   MaterialProps,
   TransformData,
   SelectionInfo,
+  SceneMetadata,
 } from "./domain/types";
 
 // ── Props ───────────────────────────────────────────────────────────────────
@@ -44,6 +47,8 @@ export interface RoomSceneProps {
   updateLightRef: React.MutableRefObject<((props: Partial<LightProps>) => void) | null>;
   updateMaterialRef: React.MutableRefObject<((props: Partial<MaterialProps>) => void) | null>;
   updateTransformRef: React.MutableRefObject<((props: Partial<TransformData>) => void) | null>;
+  captureScreenshotRef: React.MutableRefObject<(() => string) | null>;
+  exportSceneRef: React.MutableRefObject<(() => Promise<{ glb: ArrayBuffer; metadata: SceneMetadata }>) | null>;
   onInspectorChange: (info: SelectionInfo | null) => void;
   onWallSelect: (wallId: WallId | null) => void;
   onCameraChange: (label: string) => void;
@@ -62,6 +67,8 @@ export function RoomScene({
   updateLightRef,
   updateMaterialRef,
   updateTransformRef,
+  captureScreenshotRef,
+  exportSceneRef,
   onInspectorChange,
   onWallSelect,
   onCameraChange,
@@ -87,6 +94,8 @@ export function RoomScene({
     updateLightRef.current = (props) => engine.updateLight(props);
     updateMaterialRef.current = (props) => engine.updateMaterial(props);
     updateTransformRef.current = (props) => engine.updateTransform(props);
+    captureScreenshotRef.current = () => engine.captureScreenshot();
+    exportSceneRef.current = () => engine.exportScene();
 
     return () => {
       engine.dispose();
@@ -98,6 +107,8 @@ export function RoomScene({
       updateLightRef.current = null;
       updateMaterialRef.current = null;
       updateTransformRef.current = null;
+      captureScreenshotRef.current = null;
+      exportSceneRef.current = null;
     };
   }, [width, depth]); // eslint-disable-line react-hooks/exhaustive-deps
 

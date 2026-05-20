@@ -76,18 +76,22 @@ export function createRoomGeometry(width: number, depth: number): RoomGeometry {
     new THREE.Mesh(new THREE.BoxGeometry(THICKNESS, WALL_HEIGHT, depth + THICKNESS * 2), wallMat.clone());
 
   const front = makeXWall();
+  front.name = "wall_front";
   front.position.set(0, WALL_HEIGHT / 2, -(hd + THICKNESS / 2));
   front.castShadow = true; front.receiveShadow = true;
 
   const back = makeXWall();
+  back.name = "wall_back";
   back.position.set(0, WALL_HEIGHT / 2, hd + THICKNESS / 2);
   back.castShadow = true; back.receiveShadow = true;
 
   const left = makeZWall();
+  left.name = "wall_left";
   left.position.set(-(hw + THICKNESS / 2), WALL_HEIGHT / 2, 0);
   left.castShadow = true; left.receiveShadow = true;
 
   const right = makeZWall();
+  right.name = "wall_right";
   right.position.set(hw + THICKNESS / 2, WALL_HEIGHT / 2, 0);
   right.castShadow = true; right.receiveShadow = true;
 
