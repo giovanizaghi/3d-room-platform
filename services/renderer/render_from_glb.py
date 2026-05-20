@@ -2,17 +2,17 @@
 render_from_glb.py — Room Scene Renderer
 =========================================
 Runs inside Blender's embedded Python. Imports a GLTF/GLB scene exported from
-the Three.js room editor and renders it with Cycles, matching the editor's
-camera position, lights, shadow ceiling, and Sims-style wall visibility.
+the Three.js room editor and renders it with EEVEE Next at low resolution,
+producing a fast lighting reference image for AI enhancement.
 
-Usage (called by the API):
+Usage (called by the renderer service):
   blender -b -P render_from_glb.py -- \
     --glb /path/to/scene.glb \
     --metadata /path/to/metadata.json \
     --output /path/to/render.png \
     [--ai-enhance]
 
-Status lines emitted on stdout (parsed by the API):
+Status lines emitted on stdout (parsed by server.py):
   RENDER_SCENE_STATUS:{"status":"enhancing"}
   RENDER_SCENE_STATUS:{"status":"done"}
 """
@@ -59,12 +59,10 @@ ceiling_h     = float(meta.get("ceilingHeight", 2.7))
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
 scene = bpy.context.scene
-scene.render.engine = "CYCLES"
-scene.cycles.device = "CPU"
-scene.cycles.samples = 32
-scene.cycles.use_denoising = False
-scene.render.resolution_x = 800
-scene.render.resolution_y = 600
+scene.render.engine = "BLENDER_EEVEE_NEXT"
+scene.eevee.taa_render_samples = 16    # fast — good enough as AI lighting reference
+scene.render.resolution_x = 512
+scene.render.resolution_y = 384
 scene.render.image_settings.file_format = "PNG"
 scene.render.filepath = args.output
 
@@ -195,13 +193,8 @@ for wall_id in hidden_walls:
         continue
     wall_obj = bpy.data.objects.get(mesh_name)
     if wall_obj:
-        # Hide from camera render but keep shadow contribution
-        wall_obj.hide_render = False                   # must be renderable for shadows
-        wall_obj.cycles_visibility.camera = False      # invisible in final image
-        wall_obj.cycles_visibility.shadow = True       # still casts shadows
-        wall_obj.cycles_visibility.diffuse = False
-        wall_obj.cycles_visibility.glossy  = False
-        wall_obj.cycles_visibility.transmission = False
+        # Hide from camera but keep shadow — works in both EEVEE Next and Cycles
+        wall_obj.visible_camera = False
 
 # ---------------------------------------------------------------------------
 # Add ambient world light so the scene isn't pitch-black
