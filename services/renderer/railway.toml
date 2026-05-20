@@ -1,0 +1,12 @@
+[build]
+  builder = "DOCKERFILE"
+  dockerfilePath = "services/renderer/Dockerfile"
+
+[deploy]
+  numReplicas = 1
+  sleepApplication = false
+  restartPolicyType = "ON_FAILURE"
+  restartPolicyMaxRetries = 10
+  # Blender startup is slow — give it 2 minutes before the first healthcheck
+  healthcheckPath = "/health"
+  healthcheckTimeout = 120

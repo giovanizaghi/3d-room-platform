@@ -4,7 +4,6 @@ import multer from "multer";
 import { copyFile, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
 import { prisma, RenderStatus } from "@repo/db";
 import { createRenderQueue, createConvertQueue } from "@repo/queue";
 import { isConfigured as storageConfigured, isStorageKey, upload as storageUpload } from "@repo/storage";
@@ -724,29 +723,21 @@ type RenderSceneStatus = "rendering" | "enhancing" | "done" | "error";
 
 interface RenderSceneJob {
   id: string;
+  rendererJobId: string;
   status: RenderSceneStatus;
-  outputPath: string;
   createdAt: Date;
   error?: string;
 }
 
+const RENDERER_URL = (process.env.RENDERER_URL ?? "http://localhost:5000").replace(/\/$/, "");
+
 const renderSceneJobs = new Map<string, RenderSceneJob>();
 
-const sceneRenderDir = resolve(outputDir, "_scene_renders");
-
-// Multer instance specifically for scene uploads (GLB + JSON metadata)
+// Multer instance for scene uploads (GLB + JSON metadata).  Files are held
+// temporarily in memory so we can forward them directly to the renderer service.
 const sceneUpload = multer({
-  storage: multer.diskStorage({
-    destination: async (_req, _file, cb) => {
-      await mkdir(sceneRenderDir, { recursive: true });
-      cb(null, sceneRenderDir);
-    },
-    filename: (_req, file, cb) => {
-      const ext = extname(file.originalname).toLowerCase() || (file.fieldname === "scene" ? ".glb" : ".json");
-      cb(null, `${randomUUID()}${ext}`);
-    },
-  }),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB per file
 });
 
 app.use("/render-scene", (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
@@ -758,87 +749,69 @@ app.post("/render-scene", sceneUpload.fields([
   const files = req.files as Record<string, Express.Multer.File[]> | undefined;
   const sceneFile = files?.["scene"]?.[0];
 
-  // metadata can be a file OR a text field (FormData sends it as text when JSON.stringify'd)
+  // metadata can be a file OR a text field
   let metadataStr: string | undefined =
     typeof req.body?.metadata === "string" ? req.body.metadata : undefined;
   if (!metadataStr) {
     const metaFile = files?.["metadata"]?.[0];
-    if (metaFile) metadataStr = await readFile(metaFile.path, "utf-8");
+    if (metaFile) metadataStr = metaFile.buffer.toString("utf-8");
   }
 
   if (!sceneFile) return res.status(400).json({ error: "scene (.glb) is required" });
   if (!metadataStr) return res.status(400).json({ error: "metadata (JSON) is required" });
 
-  let metadata: Record<string, unknown>;
   try {
-    metadata = JSON.parse(metadataStr) as Record<string, unknown>;
+    JSON.parse(metadataStr); // validate
   } catch {
     return res.status(400).json({ error: "metadata must be valid JSON" });
   }
 
+  // Forward to the renderer service
+  const form = new FormData();
+  form.append("scene", new Blob([sceneFile.buffer as unknown as ArrayBuffer], { type: "model/gltf-binary" }), "scene.glb");
+  form.append("metadata", metadataStr);
+
+  let rendererData: { jobId: string };
+  try {
+    const rendererRes = await fetch(`${RENDERER_URL}/render-from-glb`, { method: "POST", body: form });
+    if (!rendererRes.ok) {
+      const msg = await rendererRes.text().catch(() => `HTTP ${rendererRes.status}`);
+      console.error(JSON.stringify({ event: "render_scene_renderer_error", msg }));
+      return res.status(502).json({ error: "Renderer service unavailable" });
+    }
+    rendererData = await rendererRes.json() as { jobId: string };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(JSON.stringify({ event: "render_scene_renderer_unreachable", error: msg }));
+    return res.status(502).json({ error: "Could not reach renderer service" });
+  }
+
   const jobId = randomUUID();
-  const jobDir = resolve(sceneRenderDir, jobId);
-  await mkdir(jobDir, { recursive: true });
-
-  const glbPath = resolve(jobDir, "scene.glb");
-  const metadataPath = resolve(jobDir, "metadata.json");
-  const outputPath = resolve(jobDir, "render.png");
-
-  await copyFile(sceneFile.path, glbPath);
-  await writeFile(metadataPath, JSON.stringify(metadata), "utf-8");
-  await rm(sceneFile.path).catch(() => {});
-
-  const job: RenderSceneJob = { id: jobId, status: "rendering", outputPath, createdAt: new Date() };
-  renderSceneJobs.set(jobId, job);
-
-  // Spawn Blender in background — fire-and-forget
-  const scriptPath = resolve(process.cwd(), "../../services/renderer/render_from_glb.py");
-  const blender = spawn(
-    process.env.BLENDER_BIN ?? "blender",
-    ["-b", "-P", scriptPath, "--", "--glb", glbPath, "--metadata", metadataPath, "--output", outputPath],
-    { detached: false },
-  );
-
-  blender.stdout.on("data", (chunk: Buffer) => {
-    const lines = chunk.toString().split("\n");
-    for (const line of lines) {
-      if (line.startsWith("RENDER_SCENE_STATUS:")) {
-        const payload = line.slice("RENDER_SCENE_STATUS:".length).trim();
-        try {
-          const update = JSON.parse(payload) as { status: RenderSceneStatus };
-          const j = renderSceneJobs.get(jobId);
-          if (j) j.status = update.status;
-        } catch { /* ignore malformed */ }
-      }
-    }
+  renderSceneJobs.set(jobId, {
+    id: jobId,
+    rendererJobId: rendererData.jobId,
+    status: "rendering",
+    createdAt: new Date(),
   });
 
-  blender.on("close", (code) => {
-    const j = renderSceneJobs.get(jobId);
-    if (!j) return;
-    if (code === 0) {
-      j.status = "done";
-    } else if (j.status !== "done") {
-      j.status = "error";
-      j.error = `Blender exited with code ${code}`;
-    }
-    console.log(JSON.stringify({ event: "render_scene_done", jobId, code, status: j.status }));
-  });
-
-  blender.on("error", (err) => {
-    const j = renderSceneJobs.get(jobId);
-    if (j) { j.status = "error"; j.error = err.message; }
-    console.error(JSON.stringify({ event: "render_scene_spawn_error", jobId, error: err.message }));
-  });
-
-  console.log(JSON.stringify({ event: "render_scene_started", jobId }));
+  console.log(JSON.stringify({ event: "render_scene_started", jobId, rendererJobId: rendererData.jobId }));
   return res.status(202).json({ jobId });
 });
 
-app.get("/render-scene/:jobId", (req, res) => {
+app.get("/render-scene/:jobId", async (req, res) => {
   const job = renderSceneJobs.get(req.params.jobId);
   if (!job) return res.status(404).json({ error: "job not found" });
-  return res.json({ jobId: job.id, status: job.status, error: job.error ?? null });
+
+  try {
+    const rendererRes = await fetch(`${RENDERER_URL}/jobs/${job.rendererJobId}`);
+    if (!rendererRes.ok) return res.status(502).json({ error: "Renderer service unavailable" });
+    const data = await rendererRes.json() as { status: RenderSceneStatus; error?: string };
+    job.status = data.status;
+    if (data.error) job.error = data.error;
+    return res.json({ jobId: job.id, status: job.status, error: job.error ?? null });
+  } catch {
+    return res.status(502).json({ error: "Could not reach renderer service" });
+  }
 });
 
 app.get("/render-scene/:jobId/image", async (req, res) => {
@@ -846,18 +819,14 @@ app.get("/render-scene/:jobId/image", async (req, res) => {
   if (!job) return res.status(404).json({ error: "job not found" });
 
   try {
-    await stat(job.outputPath);
-  } catch {
-    return res.status(404).json({ error: "image not ready" });
-  }
-
-  try {
-    const data = await readFile(job.outputPath);
+    const rendererRes = await fetch(`${RENDERER_URL}/jobs/${job.rendererJobId}/output`);
+    if (!rendererRes.ok) return res.status(rendererRes.status).json({ error: "Image not ready" });
+    const buf = Buffer.from(await rendererRes.arrayBuffer());
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "no-store");
-    return res.send(data);
+    return res.send(buf);
   } catch {
-    return res.status(500).json({ error: "failed to read image" });
+    return res.status(502).json({ error: "Could not reach renderer service" });
   }
 });
 

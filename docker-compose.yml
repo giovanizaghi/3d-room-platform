@@ -57,6 +57,7 @@ services:
       MODELS_DIR: /app/models
       CHAIR_BLEND_SRC: /app/services/renderer/chair.blend
       CHAIR_THUMB_SRC: /app/services/renderer/chair-thumb.png
+      RENDERER_URL: http://renderer:5000
     depends_on:
       postgres:
         condition: service_healthy
@@ -74,6 +75,26 @@ services:
       start_period: 30s
       retries: 5
 
+  renderer:
+    build:
+      context: .
+      dockerfile: services/renderer/Dockerfile
+    container_name: room-renderer
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      BLENDER_BIN: blender
+      OUTPUT_DIR: /tmp/renderer_output
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-gpt-image-1}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 120s
+      retries: 5
+
   worker:
     build:
       context: .
@@ -84,14 +105,9 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
       NODE_ENV: development
-      RENDERER_SCRIPT: /app/services/renderer/render.py
       OUTPUT_DIR: /app/services/renderer/output
       MODELS_DIR: /app/models
-      USE_BLENDER: "true"
-      BLENDER_BIN: blender
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-gpt-image-1}
-      ENABLE_AI_RENDER_IMPROVEMENT: ${ENABLE_AI_RENDER_IMPROVEMENT:-false}
+      RENDERER_URL: http://renderer:5000
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,6 +115,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      renderer:
+        condition: service_healthy
     volumes:
       - render_output:/app/services/renderer/output
       - models_storage:/app/models

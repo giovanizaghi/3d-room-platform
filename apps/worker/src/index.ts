@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { mkdirSync, statSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { Worker } from "bullmq";
@@ -25,6 +25,9 @@ const fallbackBlendFile = process.env.BLEND_FILE ?? resolve(rendererDir, "chair.
 const blenderBin = process.env.BLENDER_BIN ?? "blender";
 const useBlender = (process.env.USE_BLENDER ?? "true") === "true";
 
+/** HTTP renderer service URL — when set, all Blender work is delegated there. */
+const RENDERER_URL = process.env.RENDERER_URL?.replace(/\/$/, "");
+
 /** How long without a heartbeat before the stall monitor acts (ms). */
 const STALL_THRESHOLD_MS = 90_000;
 /** How often the stall monitor sweeps for stalled renders (ms). */
@@ -33,6 +36,127 @@ const STALL_MONITOR_INTERVAL_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 
 mkdirSync(outputDir, { recursive: true });
+
+// ---------------------------------------------------------------------------
+// HTTP Renderer helpers  (used when RENDERER_URL is set)
+// ---------------------------------------------------------------------------
+
+interface RendererJobStatus {
+  jobId: string;
+  status: "rendering" | "enhancing" | "done" | "error";
+  progress: number;
+  stage?: string;
+  message?: string;
+  error?: string;
+}
+
+/**
+ * Poll the renderer service every second until the job reaches a terminal state.
+ * Calls onProgress for each status update so the caller can update the DB.
+ */
+async function pollRendererJob(
+  jobId: string,
+  onProgress: (s: RendererJobStatus) => Promise<void>,
+): Promise<void> {
+  while (true) {
+    await new Promise(r => setTimeout(r, 1000));
+    let data: RendererJobStatus;
+    try {
+      const res = await fetch(`${RENDERER_URL}/jobs/${jobId}`);
+      if (!res.ok) continue; // transient failure — retry
+      data = await res.json() as RendererJobStatus;
+    } catch {
+      continue; // network blip — retry
+    }
+    await onProgress(data);
+    if (data.status === "done") return;
+    if (data.status === "error") throw new Error(data.error ?? "Renderer job failed");
+  }
+}
+
+/**
+ * Render a .blend model via the HTTP renderer service.
+ * Returns the local output PNG path.
+ */
+async function runRendererHttp(
+  renderId: string,
+  items: unknown[],
+  blendFilePath: string,
+  aiEnhance: boolean,
+): Promise<string> {
+  const blendBytes = await readFile(blendFilePath);
+  const form = new FormData();
+  form.append("blend", new Blob([blendBytes], { type: "application/octet-stream" }), "model.blend");
+  form.append("renderId", renderId);
+  form.append("items", JSON.stringify(items));
+  form.append("aiEnhance", String(aiEnhance));
+
+  const startRes = await fetch(`${RENDERER_URL}/render`, { method: "POST", body: form });
+  if (!startRes.ok) {
+    const msg = await startRes.text().catch(() => `HTTP ${startRes.status}`);
+    throw new Error(`Renderer /render: ${msg}`);
+  }
+  const { jobId } = await startRes.json() as { jobId: string };
+
+  const outputPath = resolve(outputDir, `${renderId}.png`);
+  const heartbeatTimer = setInterval(async () => {
+    await prisma.render.update({ where: { id: renderId }, data: { lastHeartbeatAt: new Date() } }).catch(() => {});
+  }, HEARTBEAT_INTERVAL_MS);
+
+  try {
+    await pollRendererJob(jobId, async (s) => {
+      await prisma.render.update({
+        where: { id: renderId },
+        data: {
+          lastHeartbeatAt: new Date(),
+          progress: s.progress,
+          progressLabel: s.message ?? s.stage ?? null,
+          lastLogLine: (s.message ?? s.stage ?? "").slice(0, 500) || null,
+        },
+      }).catch(() => {});
+    });
+  } finally {
+    clearInterval(heartbeatTimer);
+  }
+
+  // Download output from renderer
+  const imgRes = await fetch(`${RENDERER_URL}/jobs/${jobId}/output`);
+  if (!imgRes.ok) throw new Error(`Failed to download render output: ${imgRes.status}`);
+  await writeFile(outputPath, Buffer.from(await imgRes.arrayBuffer()));
+
+  console.log(JSON.stringify({ event: "render_completed_http", renderId, outputPath }));
+  return outputPath;
+}
+
+/**
+ * Convert a .blend to .glb via the HTTP renderer service.
+ * Returns the local .glb output path.
+ */
+async function convertViaHttp(blendFilePath: string): Promise<string> {
+  const blendBytes = await readFile(blendFilePath);
+  const form = new FormData();
+  form.append("blend", new Blob([blendBytes], { type: "application/octet-stream" }), "model.blend");
+
+  const startRes = await fetch(`${RENDERER_URL}/convert`, { method: "POST", body: form });
+  if (!startRes.ok) {
+    const msg = await startRes.text().catch(() => `HTTP ${startRes.status}`);
+    throw new Error(`Renderer /convert: ${msg}`);
+  }
+  const { jobId } = await startRes.json() as { jobId: string };
+
+  await pollRendererJob(jobId, async () => {});
+
+  const glbRes = await fetch(`${RENDERER_URL}/jobs/${jobId}/output`);
+  if (!glbRes.ok) throw new Error(`Failed to download GLB: ${glbRes.status}`);
+
+  const glbPath = resolve(blendFilePath, "..", "model.glb");
+  await writeFile(glbPath, Buffer.from(await glbRes.arrayBuffer()));
+  return glbPath;
+}
+
+// ---------------------------------------------------------------------------
+// Legacy spawn-based renderer (used when RENDERER_URL is not set)
+// ---------------------------------------------------------------------------
 
 export function buildCommand(renderId: string, items: unknown[], modelBlendFile: string, aiEnhance: boolean): { bin: string; args: string[] } {
   const outputPath = resolve(outputDir, `${renderId}.png`);
@@ -224,7 +348,9 @@ const worker = new Worker<RenderJobPayload>(
 
     let imagePath: string;
     try {
-      imagePath = await runRenderer(renderId, items, modelBlendFile, aiEnhance);
+      imagePath = RENDERER_URL
+        ? await runRendererHttp(renderId, items, modelBlendFile, aiEnhance)
+        : await runRenderer(renderId, items, modelBlendFile, aiEnhance);
     } finally {
       // Always clean up the temp blend file regardless of render outcome.
       if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -372,7 +498,15 @@ const convertWorker = new Worker<ConvertJobPayload>(
     const glbLocal = join(resolve(blendFile, ".."), "model.glb");
 
     try {
-      await new Promise<void>((res, rej) => {
+      if (RENDERER_URL) {
+        const glbResult = await convertViaHttp(blendFile);
+        // convertViaHttp writes to same dir; result path should equal glbLocal
+        if (glbResult !== glbLocal) {
+          const { rename } = await import("node:fs/promises");
+          await rename(glbResult, glbLocal).catch(() => {});
+        }
+      } else {
+        await new Promise<void>((res, rej) => {
         const { bin, args } = useBlender
           ? {
               bin: blenderBin,
@@ -415,7 +549,8 @@ const convertWorker = new Worker<ConvertJobPayload>(
         });
 
         child.on("error", rej);
-      });
+        });
+      } // end else (legacy spawn)
 
       // Upload .glb to S3 if configured, otherwise keep local.
       let gltfFilePath: string = glbLocal;

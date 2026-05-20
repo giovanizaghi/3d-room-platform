@@ -1,36 +1,8 @@
 FROM node:20-slim
 
-# System libraries required by Blender headless (no blender from apt — Bookworm only has 3.4,
-# which lacks BLENDER_EEVEE_NEXT and has .blend compatibility issues with 4.x files).
-RUN apt-get update && apt-get install -y \
-    python3 \
-    openssl \
-    curl \
-    xz-utils \
-    libglu1-mesa \
-    libxi6 \
-    libxrender1 \
-    libxxf86vm1 \
-    libxfixes3 \
-    libgl1 \
-    libxkbcommon0 \
-    libsm6 \
-    libice6 \
-    libegl1 \
-    libgles2 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Download Blender 5.1 LTS from the official Blender Foundation mirror.
-ARG BLENDER_VERSION=5.1.1
-RUN curl -fSL "https://download.blender.org/release/Blender5.1/blender-${BLENDER_VERSION}-linux-x64.tar.xz" \
-    | tar -xJ -C /opt \
-    && ln -s "/opt/blender-${BLENDER_VERSION}-linux-x64/blender" /usr/local/bin/blender \
-    && blender --version
-
-# Install Python deps (openai) into Blender's own embedded Python (not system Python).
-COPY services/renderer/requirements.txt /tmp/renderer-requirements.txt
-RUN blender -b --python-expr \
-    "import subprocess, sys; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', '/tmp/renderer-requirements.txt'])"
+# Blender rendering is handled by the dedicated renderer service — this image only needs Node.
+# openssl for Prisma, curl for healthchecks.
+RUN apt-get update && apt-get install -y openssl curl && rm -rf /var/lib/apt/lists/*
 
 # Enable corepack for pnpm
 RUN corepack enable
@@ -48,9 +20,6 @@ COPY packages/storage packages/storage
 
 # Copy Worker app
 COPY apps/worker apps/worker
-
-# Copy renderer service
-COPY services/renderer services/renderer
 
 # Install dependencies
 RUN pnpm install --frozen-lockfile
